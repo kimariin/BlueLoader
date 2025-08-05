@@ -1,0 +1,14 @@
+{
+	"java.project.referencedLibraries": [
+		"thirdparty/topsecret/rt.jar",
+		"thirdparty/topsecret/bdjstack.jar",
+		"thirdparty/topsecret/interactive.zip",
+	],
+	"java.configuration.runtimes": [
+		{
+			"name": "JavaSE-1.8",
+			"path": "build/jdk8",
+			"default": true,
+		},
+	]
+}

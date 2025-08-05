@@ -1,0 +1,3 @@
+/build/
+/thirdparty/topsecret/*
+!/thirdparty/topsecret/README.txt
