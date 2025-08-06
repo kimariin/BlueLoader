@@ -1,11 +1,17 @@
 package org.bdj;
 
-import javax.tv.xlet.Xlet;
-import javax.tv.xlet.XletContext;
+public class Stage2 extends Thread {
+	private Stage1 mStage1 = null;
 
-public class Stage2 extends Thread implements Xlet {
-	public void initXlet(XletContext ctx) {}
-	public void startXlet() {}
-	public void pauseXlet() {}
-	public void destroyXlet(boolean unconditional) {}
+	public void run(Stage1 stage1) {
+		mStage1 = stage1;
+		run();
+	}
+
+	public void run() {
+		String text = mStage1.mTextBox.getText();
+		text += "\n";
+		text += "Stage2 loaded";
+		mStage1.mTextBox.setText(text);
+	}
 }

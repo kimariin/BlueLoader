@@ -50,7 +50,9 @@ JFLAGS := -Xlint:all -Xlint:-options -source 1.4 -target 1.4
 S1_DSTDIR  := build/stage1
 S1_BDPERM  := org/bdj/bluray.Stage1.perm
 S1_SOURCES := org/bdj/Stage1.java
-S1_SOURCES += org/bdj/UI.java
+S1_SOURCES += org/bdj/Stage2.java
+S1_SOURCES += org/bdj/DisableSecurity.java
+S1_SOURCES += org/bdj/UITextBox.java
 
 build/stage1.jar: $(JAVA8) $(addprefix src/,$(S1_SOURCES)) src/$(S1_BDPERM)
 	mkdir -p $(S1_DSTDIR)
