@@ -2,8 +2,7 @@ package org.bdj;
 
 import java.awt.BorderLayout;
 import java.awt.Frame;
-import java.io.PrintWriter;
-import java.io.StringWriter;
+import java.net.InetAddress;
 
 // FIXME: Why are imports from javax.tv okay here but not in DisableSecurityXlet?
 import javax.tv.xlet.Xlet;
@@ -17,7 +16,6 @@ public class MainXlet implements Xlet {
 	public UITextConsole mConsole = new UITextConsole();
 
 	private DisableSecurity disableSecurity = null;
-	private StringWriter message = new StringWriter();
 
 	public void initXlet(XletContext ctx) {
 		// FIXME: Is this actually needed for BD-JB-1250 to work?
@@ -52,9 +50,25 @@ public class MainXlet implements Xlet {
 		mScene.setVisible(true);
 		mScene.repaint();
 
+		// getLocalHost can fail if called from two threads at the same time, apparently?
+		InetAddress localHost;
 		try {
-			RemoteLoader loader = new RemoteLoader(9025, mConsole);
-			loader.start();
+			localHost = InetAddress.getLocalHost();
+		} catch (Exception e) {
+			localHost = InetAddress.getLoopbackAddress();
+			mConsole.add(e);
+		}
+
+		try {
+			RemoteConsole remoteConsole = new RemoteConsole(localHost, 9020, mConsole);
+			remoteConsole.start();
+		} catch (Throwable e) {
+			mConsole.add(e);
+		}
+
+		try {
+			RemoteLoader remoteLoader = new RemoteLoader(localHost, 9025, mConsole);
+			remoteLoader.start();
 		} catch (Throwable e) {
 			mConsole.add(e);
 		}

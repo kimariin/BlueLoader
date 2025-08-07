@@ -15,10 +15,13 @@ import java.util.jar.Manifest;
 
 public class RemoteLoader extends Thread {
 	public int mPort;
+
+	private InetAddress mLocalHost;
 	private UITextConsole mConsole;
 
-	public RemoteLoader(int port, UITextConsole console) {
+	public RemoteLoader(InetAddress localHost, int port, UITextConsole console) {
 		super();
+		mLocalHost = localHost;
 		mPort = port;
 		mConsole = console;
 	}
@@ -28,9 +31,8 @@ public class RemoteLoader extends Thread {
 	public void run() {
 		try {
 			mServer = new ServerSocket(mPort);
-			InetAddress inetAddress = InetAddress.getLocalHost();
-			String name = inetAddress.getHostName();
-			String addr = inetAddress.getHostAddress();
+			String name = mLocalHost.getHostName();
+			String addr = mLocalHost.getHostAddress();
 			mConsole.add("Remote JAR loader listening on " + name + ":" + mPort);
 			if (!name.equals(addr)) {
 				mConsole.add("Remote JAR loader listening on " + addr + ":" + mPort);
@@ -40,7 +42,7 @@ public class RemoteLoader extends Thread {
 				Socket client = mServer.accept();
 				String clientAddr = client.getInetAddress().getHostAddress();
 				int clientPort = client.getPort();
-				mConsole.add("Client connected: " + clientAddr + ":" + clientPort);
+				mConsole.add("Remote loader client connected: " + clientAddr + ":" + clientPort);
 
 				File payload = File.createTempFile("payload", ".jar");
 				payload.deleteOnExit();

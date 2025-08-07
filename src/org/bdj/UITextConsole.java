@@ -15,7 +15,7 @@ public class UITextConsole extends Container {
 	public Font mFont = new Font(null, Font.PLAIN, 20);
 	public Color mBgColor = new Color(20, 20, 60);
 	public Color mFgColor = new Color(250, 250, 250);
-	public Vector mLines = new Vector(128);
+	public Vector mLines = new Vector(1024);
 
 	public UITextConsole() {
 		super();
@@ -24,7 +24,7 @@ public class UITextConsole extends Container {
 		setForeground(Color.WHITE); // Possibly required?
 	}
 
-	public synchronized void add(String line) {
+	public void add(String line) {
 		try {
 			StringTokenizer st = new StringTokenizer(line, "\n");
 			int tokens = st.countTokens();
@@ -43,11 +43,15 @@ public class UITextConsole extends Container {
 						sb.append(c);
 					}
 				}
-				mLines.add(sb.toString());
+				synchronized(mLines) {
+					mLines.add(sb.toString());
+				}
 			}
 			repaint();
 		} catch (Throwable e) {
-			mLines.add(e.toString());
+			synchronized(mLines) {
+				mLines.add(e.toString());
+			}
 			repaint();
 		}
 	}
@@ -77,16 +81,14 @@ public class UITextConsole extends Container {
 			int lineHeight = g.getFontMetrics().getHeight();
 			int x = margin;
 			int y = h - margin;
-			for (int i = mLines.size() - 1; i >= 0; i--) {
-				// Note that x,y is the bottom/baseline left corner of the text
-				g.drawString((String)mLines.elementAt(i), x, y);
-				y -= lineHeight - spacing;
-				if (y < -lineHeight) {
-					// If line N is not visible anymore, then we should delete lines 0 through N
-					for (int j = 0; j <= i; j++) {
-						mLines.removeElementAt(0);
+			synchronized(mLines) {
+				for (int i = mLines.size() - 1; i >= 0; i--) {
+					// Note that x,y is the bottom/baseline left corner of the text
+					g.drawString((String)mLines.elementAt(i), x, y);
+					y -= lineHeight - spacing;
+					if (y < -lineHeight) {
+						break;
 					}
-					break;
 				}
 			}
 		} catch (Throwable e) {

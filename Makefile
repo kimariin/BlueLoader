@@ -54,6 +54,7 @@ LOADER_SOURCES += org/bdj/DisableSecurityAction.java
 LOADER_SOURCES += org/bdj/DisableSecurityXlet.java
 LOADER_SOURCES += org/bdj/UITextConsole.java
 LOADER_SOURCES += org/bdj/RemoteLoader.java
+LOADER_SOURCES += org/bdj/RemoteConsole.java
 
 build/blueloader.jar: $(JAVA8) $(addprefix src/,$(LOADER_SOURCES)) src/$(LOADER_BD_PERM)
 	mkdir -p $(LOADER_DSTDIR)
@@ -186,8 +187,15 @@ build/blueloader.iso: $(MAKEFS) $(BD_ALL)
 	$(MAKEFS) -m 16m -t udf -o T=bdre,v=2.50,L=$(DISC_LABEL) $@ $(DISC)
 
 # Command that uploads built payload to loader
-# Usage: HOST=192.168.x.x PORT=9025 make upload
+# Usage: HOST=192.168.x.x make upload
 
 .PHONY: upload
 upload: build/payload.jar
-	cat build/payload.jar | netcat $(HOST) $(PORT) -q0
+	cat build/payload.jar | netcat $(HOST) 9025 -q0
+
+# Command that listens to the remote console
+# Usage: HOST=192.168.x.x make console
+
+.PHONY: console
+console:
+	netcat $(HOST) 9020
