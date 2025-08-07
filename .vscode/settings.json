@@ -2,7 +2,7 @@
 	"java.project.referencedLibraries": [
 		"thirdparty/topsecret/rt.jar",
 		"thirdparty/topsecret/bdjstack.jar",
-		"thirdparty/topsecret/interactive.zip",
+		"thirdparty/bd-stubs/interactive.zip",
 	],
 	"java.configuration.runtimes": [
 		{
