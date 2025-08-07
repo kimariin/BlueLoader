@@ -3,7 +3,7 @@ https://github.com/TheOfficialFloW/bd-jb
 
 Code is under org.bdj to match Gezine's BD-JB-1250 PoC, in case the namespace is relevant somehow.
 
-OpenSans-Regular converted from TTF to OTF using FontForge:
-fontforge -c "import fontforge; from sys import argv; f = fontforge.open(argv[1]); f.generate(argv[2])" OpenSans-Regular.ttf OpenSans-Regular.otf
+Font converted from TTF to OTF using FontForge:
+fontforge -c "import fontforge; from sys import argv; f = fontforge.open(argv[1]); f.generate(argv[2])" x.ttf x.otf
 
 Banner generated with https://www.shadertoy.com/view/lfsBzB
