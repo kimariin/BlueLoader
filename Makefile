@@ -81,6 +81,7 @@ PAYLOAD_SOURCES += org/bdj/api/Int64.java
 PAYLOAD_SOURCES += org/bdj/api/Text.java
 PAYLOAD_SOURCES += org/bdj/api/UnsafeInterface.java
 PAYLOAD_SOURCES += org/bdj/api/UnsafeSunImpl.java
+PAYLOAD_SOURCES += org/bdj/payload/LibKernel.java
 
 build/payload.jar: $(JAVA8) $(addprefix src/,$(PAYLOAD_SOURCES))
 	mkdir -p $(PAYLOAD_DSTDIR)
