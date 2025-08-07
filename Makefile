@@ -1,7 +1,7 @@
 # Makefile cheat sheet:
 # https://www.gnu.org/software/make/manual/html_node/Automatic-Variables.html
 
-all: build/bluelapse.iso build/stage2.jar
+all: build/BlueLoader.iso
 
 # Known-good JDK packages for Linux
 # Source: https://github.com/adoptium/temurin8-binaries/releases
@@ -41,40 +41,25 @@ SECCPATH := $(BDTOOLS)/security.jar:$(BDTOOLS)/bcprov-jdk15-137.jar:$(BDTOOLS)/j
 KEYSTORE := thirdparty/bd-certificates/keystore.store
 BDSIGNER := $(JAVA8) -cp $(SECCPATH) net.java.bd.tools.security.BDSigner -keystore $(KEYSTORE)
 
-# Stage1 is the initial Xlet that the PS4 loads. It always lives on the Blu-ray disc. It tries to
-# It use the BD-JB-1250 exploit to escape the JVM sandbox, then chainloads stage 2.
+# MainXlet is the initial Xlet that the PS4 loads. It always lives on the Blu-ray disc.
 
 CPATH  := thirdparty/bd-stubs/interactive.zip:thirdparty/topsecret/rt.jar:thirdparty/topsecret/bdjstack.jar
 JFLAGS := -Xlint:all -Xlint:-options -source 1.4 -target 1.4
 
-S1_DSTDIR  := build/stage1
-S1_BDPERM  := org/bdj/bluray.Stage1.perm
-S1_SOURCES := org/bdj/Stage1.java
-S1_SOURCES += org/bdj/Stage2.java
-S1_SOURCES += org/bdj/DisableSecurity.java
-S1_SOURCES += org/bdj/UITextBox.java
+LOADER_DSTDIR  := build/blueloader
+LOADER_BD_PERM := org/bdj/bluray.MainXlet.perm
+LOADER_SOURCES := org/bdj/MainXlet.java
+LOADER_SOURCES += org/bdj/DisableSecurity.java
+LOADER_SOURCES += org/bdj/DisableSecurityAction.java
+LOADER_SOURCES += org/bdj/DisableSecurityXlet.java
+LOADER_SOURCES += org/bdj/UITextBox.java
 
-build/stage1.jar: $(JAVA8) $(addprefix src/,$(S1_SOURCES)) src/$(S1_BDPERM)
-	mkdir -p $(S1_DSTDIR)
-	mkdir -p $(S1_DSTDIR)/$(dir $(S1_BDPERM))
-	cp src/$(S1_BDPERM) $(S1_DSTDIR)/$(S1_BDPERM)
-	$(JDK8)/bin/javac -d $(S1_DSTDIR) -sourcepath src $(JFLAGS) -cp $(CPATH) $(addprefix src/,$(S1_SOURCES))
-	$(JDK8)/bin/jar cf $@ -C $(S1_DSTDIR) .
-	$(BDSIGNER) $@
-	-rm META-INF/SIG-BD00.RSA
-	-rm META-INF/SIG-BD00.SF
-	-rmdir META-INF
-
-# Stage2 will be an Xlet that can be loaded from the disc, from a USB drive or over the network.
-# FIXME: Just not yet.
-
-S2_DSTDIR  := build/stage2
-S2_SOURCES := org/bdj/Stage2.java
-
-build/stage2.jar: $(JAVA8) $(addprefix src/,$(S2_SOURCES))
-	mkdir -p $(S2_DSTDIR)
-	$(JDK8)/bin/javac -d $(S2_DSTDIR) -sourcepath src $(JFLAGS) -cp $(CPATH) $(addprefix src/,$(S2_SOURCES))
-	$(JDK8)/bin/jar cf $@ -C $(S2_DSTDIR) .
+build/blueloader.jar: $(JAVA8) $(addprefix src/,$(LOADER_SOURCES)) src/$(LOADER_BD_PERM)
+	mkdir -p $(LOADER_DSTDIR)
+	mkdir -p $(LOADER_DSTDIR)/$(dir $(LOADER_BD_PERM))
+	cp src/$(LOADER_BD_PERM) $(LOADER_DSTDIR)/$(LOADER_BD_PERM)
+	$(JDK8)/bin/javac -d $(LOADER_DSTDIR) -sourcepath src $(JFLAGS) -cp $(CPATH) $(addprefix src/,$(LOADER_SOURCES))
+	$(JDK8)/bin/jar cf $@ -C $(LOADER_DSTDIR) .
 	$(BDSIGNER) $@
 	-rm META-INF/SIG-BD00.RSA
 	-rm META-INF/SIG-BD00.SF
@@ -84,18 +69,30 @@ build/stage2.jar: $(JAVA8) $(addprefix src/,$(S2_SOURCES))
 
 DISC      := build/disc
 BD_JO     := $(DISC)/BDMV/BDJO/00000.bdjo
-BD_STAGE1 := $(DISC)/BDMV/JAR/00000.jar
-BD_STAGE2 := $(DISC)/BDMV/JAR/00001.jar
+BD_JAR    := $(DISC)/BDMV/JAR/00000.jar
 BD_FONT   := $(DISC)/BDMV/AUXDATA/00000.otf
+BD_FNTIDX := $(DISC)/BDMV/AUXDATA/dvb.fontindex
 BD_META   := $(DISC)/BDMV/META/DL/bdmt_eng.xml
 BD_BANNER := $(DISC)/BDMV/META/DL/banner.jpg
-BD_INDEX  := $(DISC)/BDMV/index.bdmv
-BD_MVOBJ  := $(DISC)/BDMV/MovieObject.bdmv
-BD_ID     := $(DISC)/CERTIFICATE/id.bdmv
-BD_APPCRT := $(DISC)/CERTIFICATE/app.discroot.crt
-BD_BUCRT  := $(DISC)/CERTIFICATE/bu.discroot.crt
-BD_ALL    := $(BD_JO) $(BD_STAGE1) $(BD_STAGE2) $(BD_FONT) $(BD_META) $(BD_BANNER) $(BD_INDEX) \
-             $(BD_MVOBJ) $(BD_ID) $(BD_APPCRT) $(BD_BUCRT)
+BD_INDEX1 := $(DISC)/BDMV/index.bdmv
+BD_INDEX2 := $(DISC)/BDMV/BACKUP/index.bdmv
+BD_INDEX3 := $(DISC)/BDMV/BACKUP/INDEX.BDM
+BD_MVOBJ1 := $(DISC)/BDMV/MovieObject.bdmv
+BD_MVOBJ2 := $(DISC)/BDMV/BACKUP/MovieObject.bdmv
+BD_MVOBJ3 := $(DISC)/BDMV/BACKUP/MOVIEOBJ.BDM
+BD_CLPI   := $(DISC)/BDMV/CLIPINF/00000.clpi
+BD_MPLS   := $(DISC)/BDMV/PLAYLIST/00000.mpls
+BD_STREAM := $(DISC)/BDMV/STREAM/00000.m2ts
+BD_ID1    := $(DISC)/CERTIFICATE/id.bdmv
+BD_ID2    := $(DISC)/CERTIFICATE/BACKUP/id.bdmv
+BD_ACRT1  := $(DISC)/CERTIFICATE/app.discroot.crt
+BD_ACRT2  := $(DISC)/CERTIFICATE/BACKUP/app.discroot.crt
+BD_BCRT1  := $(DISC)/CERTIFICATE/bu.discroot.crt
+BD_BCRT2  := $(DISC)/CERTIFICATE/BACKUP/bu.discroot.crt
+BD_ALL    := $(BD_JO) $(BD_JAR) $(BD_FONT) $(BD_FNTIDX) $(BD_META) $(BD_BANNER) \
+             $(BD_INDEX1) $(BD_INDEX2) $(BD_INDEX3) $(BD_MVOBJ1) $(BD_MVOBJ2) $(BD_MVOBJ3) \
+             $(BD_CLPI) $(BD_MPLS) $(BD_STREAM) \
+             $(BD_ID1) $(BD_ID2) $(BD_ACRT1) $(BD_ACRT2) $(BD_BCRT1) $(BD_BCRT2)
 
 # Create directories
 $(DISC): $(sort $(dir $(BD_ALL)))
@@ -106,16 +103,14 @@ $(sort $(dir $(BD_ALL))):
 $(BD_JO): bd-metadata/bdjo.xml $(DISC) $(JAVA8) thirdparty/bd-tools/bdjo.jar
 	$(JAVA8) -jar thirdparty/bd-tools/bdjo.jar $< $@
 
-# Signed Stage1 JAR file containing that Xlet
-$(BD_STAGE1): build/stage1.jar $(DISC)
-	cp $< $@
-
-# Signed Stage2 JAR file
-$(BD_STAGE2): build/stage2.jar $(DISC)
+# Signed JAR containing the BlueLoader Xlet
+$(BD_JAR): build/blueloader.jar $(DISC)
 	cp $< $@
 
 # There needs to be at least one font file on the disc, if I understand correctly
 $(BD_FONT): bd-metadata/OpenSans-Regular.otf $(DISC)
+	cp $< $@
+$(BD_FNTIDX): bd-metadata/dvb.fontindex $(DISC)
 	cp $< $@
 
 # Metadata about the disc, including user-visible name and banner
@@ -124,28 +119,45 @@ $(BD_META): bd-metadata/bdmt_eng.xml $(DISC)
 $(BD_BANNER): bd-metadata/banner.jpg $(DISC)
 	cp $< $@
 
-# Boilerplate, not relevant for BD-J apps
-$(BD_INDEX): bd-metadata/index.xml $(DISC) $(JAVA8) thirdparty/bd-tools/index.jar
-	$(JAVA8) -jar thirdparty/bd-tools/index.jar $< $@
-
-# Boilerplate, not relevant for BD-J apps
-$(BD_MVOBJ): bd-metadata/movieobject.xml $(DISC) $(JAVA8) thirdparty/bd-tools/movieobject.jar
-	$(JAVA8) -jar thirdparty/bd-tools/movieobject.jar $< $@
-
-# Crypto nonsense?
-$(BD_ID): bd-metadata/id.xml $(DISC) $(JAVA8) thirdparty/bd-tools/id.jar
-	$(JAVA8) -jar thirdparty/bd-tools/id.jar $< $@
-
-# Certificates are taken from elsewhere so we can just copy them
-$(BD_APPCRT): thirdparty/bd-certificates/app.discroot.crt $(DISC)
+# Boilerplate that we just have to copy from BDJ-SDK
+# This is mostly bloat and ideally we'd generate a simpler set using the Disc Creation Tools, but
+# figuring out which bits the PS4 actually cares about is just too painful for me at this point.
+$(BD_INDEX1): thirdparty/bd-template/index.bdmv $(DISC)
 	cp $< $@
-$(BD_BUCRT): thirdparty/bd-certificates/bu.discroot.crt $(DISC)
+$(BD_INDEX2): thirdparty/bd-template/index.bdmv $(DISC)
+	cp $< $@
+$(BD_INDEX3): thirdparty/bd-template/index.bdmv $(DISC)
+	cp $< $@
+$(BD_MVOBJ1): thirdparty/bd-template/MovieObject.bdmv $(DISC)
+	cp $< $@
+$(BD_MVOBJ2): thirdparty/bd-template/MovieObject.bdmv $(DISC)
+	cp $< $@
+$(BD_MVOBJ3): thirdparty/bd-template/MovieObject.bdmv $(DISC)
+	cp $< $@
+$(BD_CLPI): thirdparty/bd-template/CLIPINF/00000.clpi $(DISC)
+	cp $< $@
+$(BD_MPLS): thirdparty/bd-template/PLAYLIST/00000.mpls $(DISC)
+	cp $< $@
+$(BD_STREAM): thirdparty/bd-template/STREAM/00000.m2ts $(DISC)
 	cp $< $@
 
-# Generate the final ISO containing stage1
-# FIXME: Should also (optionally?) include stage2 when we have one
+# Certificates are also taken from BDJ-SDK
+$(BD_ID1): thirdparty/bd-certificates/id.bdmv $(DISC)
+	cp $< $@
+$(BD_ID2): thirdparty/bd-certificates/id.bdmv $(DISC)
+	cp $< $@
+$(BD_ACRT1): thirdparty/bd-certificates/app.discroot.crt $(DISC)
+	cp $< $@
+$(BD_ACRT2): thirdparty/bd-certificates/app.discroot.crt $(DISC)
+	cp $< $@
+$(BD_BCRT1): thirdparty/bd-certificates/bu.discroot.crt $(DISC)
+	cp $< $@
+$(BD_BCRT2): thirdparty/bd-certificates/bu.discroot.crt $(DISC)
+	cp $< $@
 
-DISC_LABEL := BlueLapse
+# Generate the final ISO containing BlueLoader
 
-build/bluelapse.iso: $(MAKEFS) $(BD_ALL)
+DISC_LABEL := BlueLoader
+
+build/BlueLoader.iso: $(MAKEFS) $(BD_ALL)
 	$(MAKEFS) -m 16m -t udf -o T=bdre,v=2.50,L=$(DISC_LABEL) $@ $(DISC)

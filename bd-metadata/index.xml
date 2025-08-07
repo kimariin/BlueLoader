@@ -18,8 +18,8 @@
 		<titles>
 			<title>
 				<indexObject xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="BDJIndexObject">
-						<BDJOName>00000</BDJOName>
-						<playbackType>BDJPlayback_MOVIE</playbackType>
+					<BDJOName>00000</BDJOName>
+					<playbackType>BDJPlayback_MOVIE</playbackType>
 				</indexObject>
 				<titleAccessType>V_00</titleAccessType>
 			</title>
@@ -28,5 +28,5 @@
 	<paddingN1>0</paddingN1>
 	<paddingN2>0</paddingN2>
 	<paddingN3>0</paddingN3>
-	<version>0200</version>
+	<version>0100</version>
 </index>

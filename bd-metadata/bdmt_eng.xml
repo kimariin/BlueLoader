@@ -2,13 +2,13 @@
 <disclib xmlns="urn:BDA:bdmv;disclib">
 	<di:discinfo xmlns:di="urn:BDA:bdmv;discinfo">
 		<di:title>
-			<di:name>BlueLapse</di:name>
+			<di:name>BlueLoader</di:name>
 			<di:numSets>1</di:numSets>
 			<di:setNumber>1</di:setNumber>
 		</di:title>
 		<di:description>
 			<di:tableOfContents>
-				<di:titleName titleNumber="1">BlueLapse</di:titleName>
+				<di:titleName titleNumber="1">BlueLoader</di:titleName>
 			</di:tableOfContents>
 			<di:thumbnail href="banner.jpg"/>
 		</di:description>
