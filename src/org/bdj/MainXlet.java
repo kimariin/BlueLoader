@@ -42,10 +42,6 @@ public class MainXlet implements Xlet {
 			mConsole.add(disableSecurity.exception);
 		}
 
-		// NOTE: I'm pretty sure everything breaks if you don't call setSize here
-		mTextBox = new UITextBox(message.toString());
-		mTextBox.setSize(1920, 1080);
-
 		mScene = HSceneFactory.getInstance().getDefaultHScene();
 		mScene.add(mConsole, BorderLayout.CENTER);
 		mScene.validate();
@@ -55,6 +51,13 @@ public class MainXlet implements Xlet {
 		mConsole.setVisible(true);
 		mScene.setVisible(true);
 		mScene.repaint();
+
+		try {
+			RemoteLoader loader = new RemoteLoader(9025, mConsole);
+			loader.start();
+		} catch (Throwable e) {
+			mConsole.add(e);
+		}
 	}
 
 	public void pauseXlet() {

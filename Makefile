@@ -1,7 +1,7 @@
 # Makefile cheat sheet:
 # https://www.gnu.org/software/make/manual/html_node/Automatic-Variables.html
 
-all: build/BlueLoader.iso
+all: build/blueloader.iso build/payload.jar
 
 # Known-good JDK packages for Linux
 # Source: https://github.com/adoptium/temurin8-binaries/releases
@@ -53,6 +53,7 @@ LOADER_SOURCES += org/bdj/DisableSecurity.java
 LOADER_SOURCES += org/bdj/DisableSecurityAction.java
 LOADER_SOURCES += org/bdj/DisableSecurityXlet.java
 LOADER_SOURCES += org/bdj/UITextConsole.java
+LOADER_SOURCES += org/bdj/RemoteLoader.java
 
 build/blueloader.jar: $(JAVA8) $(addprefix src/,$(LOADER_SOURCES)) src/$(LOADER_BD_PERM)
 	mkdir -p $(LOADER_DSTDIR)
@@ -64,6 +65,27 @@ build/blueloader.jar: $(JAVA8) $(addprefix src/,$(LOADER_SOURCES)) src/$(LOADER_
 	-rm META-INF/SIG-BD00.RSA
 	-rm META-INF/SIG-BD00.SF
 	-rmdir META-INF
+
+# Payload JAR that can be uploaded via 'make upload [ip]:[port]'
+
+PAYLOAD_DSTDIR  := build/payload
+PAYLOAD_CPATH   := $(CPATH):build/blueloader.jar
+PAYLOAD_SOURCES += org/bdj/payload/Payload.java
+PAYLOAD_SOURCES += org/bdj/api/AbstractInt.java
+PAYLOAD_SOURCES += org/bdj/api/API.java
+PAYLOAD_SOURCES += org/bdj/api/Buffer.java
+PAYLOAD_SOURCES += org/bdj/api/Int8.java
+PAYLOAD_SOURCES += org/bdj/api/Int16.java
+PAYLOAD_SOURCES += org/bdj/api/Int32.java
+PAYLOAD_SOURCES += org/bdj/api/Int64.java
+PAYLOAD_SOURCES += org/bdj/api/Text.java
+PAYLOAD_SOURCES += org/bdj/api/UnsafeInterface.java
+PAYLOAD_SOURCES += org/bdj/api/UnsafeSunImpl.java
+
+build/payload.jar: $(JAVA8) $(addprefix src/,$(PAYLOAD_SOURCES))
+	mkdir -p $(PAYLOAD_DSTDIR)
+	$(JDK8)/bin/javac -d $(PAYLOAD_DSTDIR) -sourcepath src $(JFLAGS) -cp $(CPATH) $(addprefix src/,$(PAYLOAD_SOURCES))
+	$(JDK8)/bin/jar cf $@ -C $(PAYLOAD_DSTDIR) .
 
 # Assemble the Blu-ray disc
 
@@ -159,5 +181,12 @@ $(BD_BCRT2): thirdparty/bd-certificates/bu.discroot.crt $(DISC)
 
 DISC_LABEL := BlueLoader
 
-build/BlueLoader.iso: $(MAKEFS) $(BD_ALL)
+build/blueloader.iso: $(MAKEFS) $(BD_ALL)
 	$(MAKEFS) -m 16m -t udf -o T=bdre,v=2.50,L=$(DISC_LABEL) $@ $(DISC)
+
+# Command that uploads built payload to loader
+# Usage: HOST=192.168.x.x PORT=9025 make upload
+
+.PHONY: upload
+upload: build/payload.jar
+	cat build/payload.jar | netcat $(HOST) $(PORT) -q0
