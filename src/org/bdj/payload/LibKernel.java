@@ -1,6 +1,5 @@
 package org.bdj.payload;
 
-import java.awt.image.Kernel;
 import java.util.HashMap;
 
 import org.bdj.UITextConsole;
@@ -10,13 +9,14 @@ import org.bdj.api.Buffer;
 public class LibKernel {
 	public API api;
 	private UITextConsole console;
+	private long mLibKernelBase;
 
 	public LibKernel(UITextConsole console) throws Exception {
 		this.api = API.getInstance();
 		this.console = console;
 
 		KernelModuleInfo kmi = sceKernelGetModuleInfoFromAddr();
-		findAllSyscallWrappers(kmi.firstSegment);
+		mLibKernelBase = kmi.firstSegment;
 	}
 
 	/***********************************************************************************************
@@ -1139,105 +1139,88 @@ public class LibKernel {
 
 	private long[] mSyscallWrappers = new long[SYS_MAXSYSCALL];
 
-	private void findAllSyscallWrappers(long libKernelBase) {
+	private long findSyscallWrapper(int sys) {
 		// FIXME: Number taken from Lapse; is this always the size of libkernel?
 		final long LIBKERNEL_SIZE = 0x40000;
-		for (int sys = 0; sys < SYS_MAXSYSCALL; sys++) {
-			byte[] pattern = {
-				(byte)0x48, (byte)0xc7, (byte)0xc0,
-				(byte)((sys>>0)&0xFF), (byte)((sys>>8)&0xFF), (byte)((sys>>16)&0xFF), (byte)((sys>>24)&0xFF),
-				(byte)0x49, (byte)0x89, (byte)0xca, (byte)0x0f, (byte)0x05
-			};
-			long wrapper = 0;
-			for (long p = libKernelBase; p < libKernelBase + LIBKERNEL_SIZE - pattern.length; p++) {
-				boolean found = true;
-				for (int i = 0; i < pattern.length; i++) {
-					if (api.read8(p + i) != pattern[i]) {
-						found = false;
-						break;
-					}
-				}
-				if (found) {
-					wrapper = p;
+		byte[] pattern = {
+			(byte)0x48, (byte)0xc7, (byte)0xc0,
+			(byte)((sys>>0)&0xFF), (byte)((sys>>8)&0xFF), (byte)((sys>>16)&0xFF), (byte)((sys>>24)&0xFF),
+			(byte)0x49, (byte)0x89, (byte)0xca, (byte)0x0f, (byte)0x05
+		};
+		long wrapper = 0;
+		for (long p = mLibKernelBase; p < mLibKernelBase + LIBKERNEL_SIZE - pattern.length; p++) {
+			boolean found = true;
+			for (int i = 0; i < pattern.length; i++) {
+				if (api.read8(p + i) != pattern[i]) {
+					found = false;
 					break;
 				}
 			}
-			if (wrapper != 0) {
-				mSyscallWrappers[sys] = wrapper;
-				String name = LibKernel.getSyscallName(sys);
-				String addrx = Long.toHexString(wrapper);
-				console.add("libkernel: wrapper for " + name + " (" + sys + ") at 0x" + addrx);
+			if (found) {
+				wrapper = p;
+				break;
 			}
 		}
+		String name = LibKernel.getSyscallName(sys);
+		if (wrapper != 0) {
+			mSyscallWrappers[sys] = wrapper;
+			String addrx = Long.toHexString(wrapper);
+			console.add("libkernel: wrapper for " + name + " (" + sys + ") at 0x" + addrx);
+		} else {
+			console.add("libkernel: no wrapper for " + name + " (" + sys + ")");
+		}
+		return wrapper;
 	}
 
 	/** Find a syscall wrapper inside libkernel for the given syscall number, 0 if none found */
 	public long get(int sys) {
 		long wrapper = mSyscallWrappers[sys];
 		if (wrapper == 0) {
-			console.add("libkernel: get(" + LibKernel.getSyscallName(sys) + "): no wrapper exists");
+			wrapper = findSyscallWrapper(sys);
 		}
 		return wrapper;
 	}
 
 	/** Invoke a syscall with no arguments */
 	public long syscall(int sys) {
-		long wrapper = mSyscallWrappers[sys];
-		if (wrapper == 0) {
-			console.add("libkernel: syscall(" + LibKernel.getSyscallName(sys) + "): no wrapper exists");
-			return -1;
-		}
-		return api.call(wrapper);
+		long wrapper = get(sys);
+		return wrapper == 0 ? -1 : api.call(wrapper);
 	}
 
 	/** Invoke a syscall with one argument */
 	public long syscall(int sys, long arg0) {
-		long wrapper = mSyscallWrappers[sys];
-		if (wrapper == 0) {
-			console.add("libkernel: syscall(" + LibKernel.getSyscallName(sys) + "): no wrapper exists");
-			return -1;
-		}
-		return api.call(wrapper, arg0);
+		long wrapper = get(sys);
+		return wrapper == 0 ? -1 : api.call(wrapper, arg0);
 	}
 
 	/** Invoke a syscall with 2 arguments */
 	public long syscall(int sys, long arg0, long arg1) {
-		long wrapper = mSyscallWrappers[sys];
-		if (wrapper == 0) {
-			console.add("libkernel: syscall(" + LibKernel.getSyscallName(sys) + "): no wrapper exists");
-			return -1;
-		}
-		return api.call(wrapper, arg0, arg1);
+		long wrapper = get(sys);
+		return wrapper == 0 ? -1 : api.call(wrapper, arg0, arg1);
 	}
 
 	/** Invoke a syscall with 3 arguments */
 	public long syscall(int sys, long arg0, long arg1, long arg2) {
-		long wrapper = mSyscallWrappers[sys];
-		if (wrapper == 0) {
-			console.add("libkernel: syscall(" + LibKernel.getSyscallName(sys) + "): no wrapper exists");
-			return -1;
-		}
-		return api.call(wrapper, arg0, arg1, arg2);
+		long wrapper = get(sys);
+		return wrapper == 0 ? -1 : api.call(wrapper, arg0, arg1, arg2);
 	}
 
 	/** Invoke a syscall with 4 arguments */
 	public long syscall(int sys, long arg0, long arg1, long arg2, long arg3) {
-		long wrapper = mSyscallWrappers[sys];
-		if (wrapper == 0) {
-			console.add("libkernel: syscall(" + LibKernel.getSyscallName(sys) + "): no wrapper exists");
-			return -1;
-		}
-		return api.call(wrapper, arg0, arg1, arg2, arg3);
+		long wrapper = get(sys);
+		return wrapper == 0 ? -1 : api.call(wrapper, arg0, arg1, arg2, arg3);
 	}
 
 	/** Invoke a syscall with 5 arguments */
 	public long syscall(int sys, long arg0, long arg1, long arg2, long arg3, long arg4) {
-		long wrapper = mSyscallWrappers[sys];
-		if (wrapper == 0) {
-			console.add("libkernel: syscall(" + LibKernel.getSyscallName(sys) + "): no wrapper exists");
-			return -1;
-		}
-		return api.call(wrapper, arg0, arg1, arg2, arg3, arg4);
+		long wrapper = get(sys);
+		return wrapper == 0 ? -1 : api.call(wrapper, arg0, arg1, arg2, arg3, arg4);
+	}
+
+	/** Invoke a syscall with 6 arguments */
+	public long syscall(int sys, long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) {
+		long wrapper = get(sys);
+		return wrapper == 0 ? -1 : api.call(wrapper, arg0, arg1, arg2, arg3, arg4, arg5);
 	}
 
 	/***********************************************************************************************
