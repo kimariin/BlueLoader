@@ -14,7 +14,7 @@ import org.havi.ui.HSceneFactory;
 
 public class MainXlet implements Xlet {
 	public HScene mScene = null;
-	public UITextBox mTextBox = null;
+	public UITextConsole mConsole = new UITextConsole();
 
 	private DisableSecurity disableSecurity = null;
 	private StringWriter message = new StringWriter();
@@ -29,20 +29,17 @@ public class MainXlet implements Xlet {
 		disableSecurity = new DisableSecurity();
 		switch (disableSecurity.status) {
 			case DisableSecurity.ENABLED:
-				message.write("BD-JB-1250 failed to disable JVM security");
+				mConsole.add("BD-JB-1250 failed to disable JVM security");
 				break;
 			case DisableSecurity.DISABLED_BY_EXPLOIT:
-				message.write("BD-JB-1250 successfully disabled JVM security");
+				mConsole.add("BD-JB-1250 successfully disabled JVM security");
 				break;
 			case DisableSecurity.DISABLED_PREVIOUSLY:
-				message.write("JVM security previously disabled");
+				mConsole.add("JVM security previously disabled");
 				break;
 		}
 		if (disableSecurity.exception != null) {
-			message.write('\n');
-			PrintWriter messagePrintWriter = new PrintWriter(message);
-			disableSecurity.exception.printStackTrace(messagePrintWriter);
-			messagePrintWriter.close();
+			mConsole.add(disableSecurity.exception);
 		}
 
 		// NOTE: I'm pretty sure everything breaks if you don't call setSize here
@@ -50,23 +47,23 @@ public class MainXlet implements Xlet {
 		mTextBox.setSize(1920, 1080);
 
 		mScene = HSceneFactory.getInstance().getDefaultHScene();
-		mScene.add(mTextBox, BorderLayout.CENTER);
+		mScene.add(mConsole, BorderLayout.CENTER);
 		mScene.validate();
 	}
 
 	public void startXlet() {
-		mTextBox.setVisible(true);
+		mConsole.setVisible(true);
 		mScene.setVisible(true);
 		mScene.repaint();
 	}
 
 	public void pauseXlet() {
 		// FIXME: Is this actually needed?
-		mTextBox.setVisible(true);
+		mConsole.setVisible(true);
 	}
 
 	public void destroyXlet(boolean unconditional) {
 		// FIXME: Is this actually needed?
-		mScene.remove(mTextBox);
+		mScene.remove(mConsole);
 	}
 }

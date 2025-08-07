@@ -48,11 +48,11 @@ JFLAGS := -Xlint:all -Xlint:-options -source 1.4 -target 1.4
 
 LOADER_DSTDIR  := build/blueloader
 LOADER_BD_PERM := org/bdj/bluray.MainXlet.perm
-LOADER_SOURCES := org/bdj/MainXlet.java
+LOADER_SOURCES += org/bdj/MainXlet.java
 LOADER_SOURCES += org/bdj/DisableSecurity.java
 LOADER_SOURCES += org/bdj/DisableSecurityAction.java
 LOADER_SOURCES += org/bdj/DisableSecurityXlet.java
-LOADER_SOURCES += org/bdj/UITextBox.java
+LOADER_SOURCES += org/bdj/UITextConsole.java
 
 build/blueloader.jar: $(JAVA8) $(addprefix src/,$(LOADER_SOURCES)) src/$(LOADER_BD_PERM)
 	mkdir -p $(LOADER_DSTDIR)
@@ -108,7 +108,7 @@ $(BD_JAR): build/blueloader.jar $(DISC)
 	cp $< $@
 
 # There needs to be at least one font file on the disc, if I understand correctly
-$(BD_FONT): bd-metadata/OpenSans-Regular.otf $(DISC)
+$(BD_FONT): bd-metadata/DejaVuSansMono.otf $(DISC)
 	cp $< $@
 $(BD_FNTIDX): bd-metadata/dvb.fontindex $(DISC)
 	cp $< $@

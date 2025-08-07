@@ -3,7 +3,7 @@
 "http://www.dvb.org/mhp/dtd/fontdirectory-1-0.dtd">
 <fontdirectory>
 	<font>
-		<name>OpenSans</name>
+		<name>DejaVuSansMono</name>
 		<fontformat>OTF</fontformat>
 		<filename>00000.otf</filename>
 		<style>PLAIN</style>
