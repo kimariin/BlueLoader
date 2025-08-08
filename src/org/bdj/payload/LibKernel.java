@@ -7,12 +7,13 @@ import org.bdj.api.API;
 import org.bdj.api.Buffer;
 
 public class LibKernel {
-	public API api;
+	public static API api;
+
 	private UITextConsole console;
 	private long mLibKernelBase;
 
 	public LibKernel(UITextConsole console) throws Exception {
-		this.api = API.getInstance();
+		api = API.getInstance();
 		this.console = console;
 
 		KernelModuleInfo kmi = sceKernelGetModuleInfoFromAddr();
@@ -1164,8 +1165,8 @@ public class LibKernel {
 		String name = LibKernel.getSyscallName(sys);
 		if (wrapper != 0) {
 			mSyscallWrappers[sys] = wrapper;
-			String addrx = Long.toHexString(wrapper);
-			console.add("libkernel: wrapper for " + name + " (" + sys + ") at 0x" + addrx);
+			// String addrx = Long.toHexString(wrapper);
+			// console.add("libkernel: wrapper for " + name + " (" + sys + ") at 0x" + addrx);
 		} else {
 			console.add("libkernel: no wrapper for " + name + " (" + sys + ")");
 		}
@@ -1245,6 +1246,63 @@ public class LibKernel {
 		return addr;
 	}
 
+	// FIXME: Basic stuff like errno should have helpers
+
+	/***********************************************************************************************
+	 * Field declaration helper classes
+	 * https://github.com/xvortex/ps4-payload-sdk/blob/master/libPS4/include/types.h - for sizes
+	 **********************************************************************************************/
+
+	 public static class Field {
+		public final int size;
+		public final int offset;
+		public final int next;
+
+		public Field(int size, int offset) {
+			this.size = size;
+			this.offset = offset;
+			this.next = offset + size;
+		}
+
+		public byte  read8 (long objaddr) { return api.read8 (objaddr + offset); }
+		public short read16(long objaddr) { return api.read16(objaddr + offset); }
+		public int   read32(long objaddr) { return api.read32(objaddr + offset); }
+		public long  read64(long objaddr) { return api.read64(objaddr + offset); }
+
+		public void write8 (long objaddr, byte  x) { api.write8 (objaddr + offset, x); }
+		public void write16(long objaddr, short x) { api.write16(objaddr + offset, x); }
+		public void write32(long objaddr, int   x) { api.write32(objaddr + offset, x); }
+		public void write64(long objaddr, long  x) { api.write64(objaddr + offset, x); }
+	}
+
+	public static class FieldInt32 extends Field {
+		public FieldInt32(int offset) { super(4, offset); }
+		public int  get(long objaddr) { return read32(objaddr); }
+		public int  get(Buffer buf)   { return read32(buf.address()); }
+		public void set(long objaddr, int x) { write32(objaddr, x); }
+		public void set(Buffer buf,   int x) { write32(buf.address(), x); }
+	}
+
+	public static class FieldInt64 extends Field {
+		public FieldInt64(int offset) { super(8, offset); }
+		public long get(long objaddr) { return read64(objaddr); }
+		public long get(Buffer buf)   { return read64(buf.address()); }
+		public void set(long objaddr, long x) { write64(objaddr, x); }
+		public void set(Buffer buf,   long x) { write64(buf.address(), x); }
+	}
+
+	public static class FieldSizeT extends FieldInt64 {
+		public FieldSizeT(int offset) { super(offset); }
+	}
+
+	public static class FieldOffT extends FieldInt64 {
+		public FieldOffT(int offset) { super(offset); }
+	}
+
+	public static class FieldPtr extends FieldInt64 {
+		public FieldPtr(int offset) { super(offset); }
+	}
+
 	/***********************************************************************************************
 	 * sceKernelGetModuleInfoFromAddr
 	 **********************************************************************************************/
@@ -1279,5 +1337,184 @@ public class LibKernel {
 	public KernelModuleInfo sceKernelGetModuleInfoFromAddr() {
 		long addr = get("sceKernelGetModuleInfoFromAddr");
 		return sceKernelGetModuleInfoFromAddr(addr);
+	}
+
+	/***********************************************************************************************
+	 * SceAIO subsystem calls
+	 * https://www.psdevwiki.com/ps4/Vulnerabilities - PoC for PS4 5.00-12.02 ... by abc
+	 **********************************************************************************************/
+
+	public static final int AIO_CMD_READ  = 0x0001;
+	public static final int AIO_CMD_WRITE = 0x0002;
+	public static final int AIO_CMD_MASK  = 0x0fff;
+	public static final int AIO_CMD_MULTI = 0x1000;
+
+	public static final int AIO_PRIORITY_LOW  = 1;
+	public static final int AIO_PRIORITY_MID  = 2;
+	public static final int AIO_PRIORITY_HIGH = 3;
+
+	public static final int AIO_STATE_COMPLETED = 2;
+	public static final int AIO_STATE_ABORTED   = 3;
+
+	// Max number of requests that can be created/polled/canceled/deleted/waited
+	public static final int MAX_AIO_IDS = 128;
+
+	// The various SceAIO syscalls that copies out errors/states will not check if the address is
+	// NULL and will return EFAULT. this dummy buffer will serve as the default argument so users
+	// don't need to specify one
+	public Buffer AIO_ERRORS = new Buffer(4 * MAX_AIO_IDS);
+
+	public static class AioResult extends Buffer {
+		public static final FieldInt64 retval = new FieldInt64(0);
+		public static final FieldInt32 state  = new FieldInt32(retval.next);
+		public static final FieldInt32 pad    = new FieldInt32(state.next);
+		public static final int SIZE = pad.next;
+		public AioResult() {
+			super(SIZE);
+			fill((byte)0);
+		}
+		public AioResult(long address) {
+			super(address, SIZE);
+		}
+		public AioResult(long retval, int state) {
+			super(SIZE);
+			set(retval, state);
+		}
+		public void set(long retval, int state) {
+			AioResult.retval.set(this, retval);
+			AioResult.state .set(this, state);
+		}
+	}
+
+	public static class AioRWRequest extends Buffer {
+		public static final FieldOffT  offset = new FieldOffT (0);
+		public static final FieldSizeT nbyte  = new FieldSizeT(offset.next);
+		public static final FieldPtr   buf    = new FieldPtr  (nbyte.next);
+		public static final FieldPtr   result = new FieldPtr  (buf.next);
+		public static final FieldInt32 fd     = new FieldInt32(result.next);
+		public static final FieldInt32 pad    = new FieldInt32(fd.next);
+		public static final int SIZE = pad.next;
+		public AioRWRequest() {
+			super(SIZE);
+			fill((byte)0);
+		}
+		public AioRWRequest(long address) {
+			super(address, SIZE);
+		}
+		public AioRWRequest(long offset, long nbyte, Buffer buf, Buffer result, int fd) {
+			super(SIZE);
+			set(offset, nbyte, buf, result, fd);
+		}
+		public void set(long offset, long nbyte, Buffer buf, Buffer result, int fd) {
+			AioRWRequest.offset.set(this, offset);
+			AioRWRequest.nbyte .set(this, nbyte);
+			AioRWRequest.buf   .set(this, buf    == null ? 0 : buf   .address());
+			AioRWRequest.result.set(this, result == null ? 0 : result.address());
+			AioRWRequest.fd    .set(this, fd);
+		}
+		public AioResult getResult() {
+			return new AioResult(AioRWRequest.result.get(this));
+		}
+	}
+
+	public static class AioRWRequests extends Buffer {
+		public static final int STRIDE = AioRWRequest.SIZE;
+		public int count;
+		public AioRWRequests(int count) {
+			super(STRIDE * count);
+			fill((byte)0);
+			this.count = count;
+		}
+		public AioRWRequests(long address, int count) {
+			super(address, STRIDE * count);
+			this.count = count;
+		}
+		public AioRWRequest get(int index) {
+			return new AioRWRequest(address() + index * STRIDE);
+		}
+		public void set(int index, long offset, long nbyte, Buffer buf, Buffer result, int fd) {
+			get(index).set(offset, nbyte, buf, result, fd);
+		}
+	}
+
+	public static class AioSubmitIds extends Buffer {
+		public static final int STRIDE = 4; // int
+		public int count;
+		public AioSubmitIds(int count) {
+			super(STRIDE * count);
+			fill((byte)0);
+			this.count = count;
+		}
+		public AioSubmitIds(long address, int count) {
+			super(address, STRIDE * count);
+			this.count = count;
+		}
+		public int get(int index) {
+			return api.read32(address() + index * STRIDE);
+		}
+		public void set(int index, int id) {
+			api.write32(address() + index * STRIDE, id);
+		}
+	}
+
+	// FIXME: Documentation, checks?
+	public long aioSubmitCmd(int cmd, AioRWRequests requests, int priority, AioSubmitIds ids) {
+		return syscall(SYS_aio_submit_cmd, cmd, requests.address(), requests.count, priority, ids.address());
+	}
+
+	// Lapse always uses AIO_PRIORITY_HIGH
+	public long aioSubmitCmd(int cmd, AioRWRequests requests, AioSubmitIds ids) {
+		return syscall(SYS_aio_submit_cmd, cmd, requests.address(), requests.count, AIO_PRIORITY_HIGH, ids.address());
+	}
+
+	public long aioMultiCancel(AioSubmitIds ids) {
+		int rem = ids.count % MAX_AIO_IDS;
+		int batches = (ids.count - rem) / MAX_AIO_IDS;
+		for (int batch = 0; batch < batches; batch++) {
+			long addr = ids.address() + (batch * MAX_AIO_IDS * AioSubmitIds.STRIDE);
+			long r = syscall(SYS_aio_multi_cancel, addr, MAX_AIO_IDS, AIO_ERRORS.address());
+			if (r != 0) {
+				return r;
+			}
+		}
+		if (rem > 0) {
+			long addr = ids.address() + (batches * MAX_AIO_IDS * AioSubmitIds.STRIDE);
+			long r = syscall(SYS_aio_multi_cancel, addr, rem, AIO_ERRORS.address());
+			if (r != 0) {
+				return r;
+			}
+		}
+		return 0;
+	}
+
+	public long aioMultiPoll(AioSubmitIds ids, Buffer errors) {
+		int rem = ids.count % MAX_AIO_IDS;
+		int batches = (ids.count - rem) / MAX_AIO_IDS;
+		for (int batch = 0; batch < batches; batch++) {
+			long addr = ids.address() + (batch * MAX_AIO_IDS * AioSubmitIds.STRIDE);
+			long r = syscall(SYS_aio_multi_poll, addr, MAX_AIO_IDS, errors.address());
+			if (r != 0) {
+				return r;
+			}
+		}
+		if (rem > 0) {
+			long addr = ids.address() + (batches * MAX_AIO_IDS * AioSubmitIds.STRIDE);
+			long r = syscall(SYS_aio_multi_poll, addr, rem, errors.address());
+			if (r != 0) {
+				return r;
+			}
+		}
+		return 0;
+	}
+
+	public long aioMultiPoll(AioSubmitIds ids) {
+		return aioMultiPoll(ids, AIO_ERRORS);
+	}
+
+	public long aioMultiDelete(AioRWRequests requests, Buffer errors) {
+		if (errors == null) {
+			errors = AIO_ERRORS;
+		}
+		return syscall(SYS_aio_multi_delete, requests.address(), requests.count, errors.address());
 	}
 }
