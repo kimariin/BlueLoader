@@ -71,7 +71,16 @@ build/blueloader.jar: $(JAVA8) $(addprefix src/,$(LOADER_SOURCES)) src/$(LOADER_
 
 PAYLOAD_DSTDIR  := build/payload
 PAYLOAD_CPATH   := $(CPATH):build/blueloader.jar
+# Payload entry point:
 PAYLOAD_SOURCES += org/bdj/payload/Payload.java
+# Library & syscall wrappers:
+PAYLOAD_SOURCES += org/bdj/payload/Library.java
+PAYLOAD_SOURCES += org/bdj/payload/LibC.java
+PAYLOAD_SOURCES += org/bdj/payload/LibKernel.java
+# Lapse exploit implementation:
+PAYLOAD_SOURCES += org/bdj/payload/LapseMainThread.java
+PAYLOAD_SOURCES += org/bdj/payload/LapseRaceThread.java
+# Unsafe helper library by TheFloW:
 PAYLOAD_SOURCES += org/bdj/api/AbstractInt.java
 PAYLOAD_SOURCES += org/bdj/api/API.java
 PAYLOAD_SOURCES += org/bdj/api/Buffer.java
@@ -82,7 +91,6 @@ PAYLOAD_SOURCES += org/bdj/api/Int64.java
 PAYLOAD_SOURCES += org/bdj/api/Text.java
 PAYLOAD_SOURCES += org/bdj/api/UnsafeInterface.java
 PAYLOAD_SOURCES += org/bdj/api/UnsafeSunImpl.java
-PAYLOAD_SOURCES += org/bdj/payload/LibKernel.java
 
 build/payload.jar: $(JAVA8) $(addprefix src/,$(PAYLOAD_SOURCES))
 	mkdir -p $(PAYLOAD_DSTDIR)
