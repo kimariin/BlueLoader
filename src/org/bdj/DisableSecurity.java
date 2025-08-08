@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2021 Andy Nguyen - BD-JB
+// Copyright (C) 2025 Gezine - BD-JB-1250
+
 package org.bdj;
 
 import java.net.URLClassLoader;

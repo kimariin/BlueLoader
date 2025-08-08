@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2021 Andy Nguyen - BD-JB
+// Copyright (C) 2025 Gezine - BD-JB-1250
+// Copyright (C) 2025 Kimari
+
 package org.bdj;
 
 import java.awt.Container;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2025 Kimari
+
 package org.bdj;
 
 import java.awt.BorderLayout;
