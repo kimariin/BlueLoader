@@ -1,11 +1,21 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2025 Kimari
 
-package org.bdj.payload;
+package org.bdj.lapse;
 
 import org.bdj.UITextConsole;
 import org.bdj.api.API;
 import org.bdj.api.Buffer;
+import org.bdj.lapse.Library.BufferLike;
+import org.bdj.lapse.Library.Callable;
+import org.bdj.lapse.Library.FieldInt32;
+import org.bdj.lapse.Library.FieldInt64;
+import org.bdj.lapse.Library.FieldOffT;
+import org.bdj.lapse.Library.FieldPtr;
+import org.bdj.lapse.Library.FieldSizeT;
+import org.bdj.lapse.Library.Function;
+import org.bdj.lapse.Library.SystemCallFailed;
+import org.bdj.lapse.Library.SystemCallInvalid;
 
 /** Wrapper around libkernel and OS syscalls required by Lapse */
 

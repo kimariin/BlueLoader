@@ -2,20 +2,20 @@
 // Copyright (C) 2025 anonymous - Lapse
 // Copyright (C) 2025 Kimari - Java port
 
-package org.bdj.payload;
+package org.bdj.lapse;
 
 import java.util.Random;
 
 import org.bdj.UITextConsole;
 import org.bdj.api.Buffer;
-import org.bdj.payload.LibKernel.AioErrorArray;
-import org.bdj.payload.LibKernel.AioRWRequest;
-import org.bdj.payload.LibKernel.AioRWRequestArray;
-import org.bdj.payload.LibKernel.AioSubmitIdArray;
-import org.bdj.payload.LibKernel.SocketAddress;
-import org.bdj.payload.LibKernel.FileDescriptor;
-import org.bdj.payload.LibKernel.Socket;
-import org.bdj.payload.LibKernel.ThreadPriority;
+import org.bdj.lapse.LibKernel.AioErrorArray;
+import org.bdj.lapse.LibKernel.AioRWRequest;
+import org.bdj.lapse.LibKernel.AioRWRequestArray;
+import org.bdj.lapse.LibKernel.AioSubmitIdArray;
+import org.bdj.lapse.LibKernel.FileDescriptor;
+import org.bdj.lapse.LibKernel.Socket;
+import org.bdj.lapse.LibKernel.SocketAddress;
+import org.bdj.lapse.LibKernel.ThreadPriority;
 
 /* Lapse is a kernel exploit for PS4 [5.00, 12.50) and PS5 [1.00-10.20) disclosed by an anonymous
  * developer ("abc") in 2025. Credit goes to abc for the proof-of-concept, Al-Azif for lapse.mjs,

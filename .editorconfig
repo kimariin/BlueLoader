@@ -1,6 +1,6 @@
 root = true
 
-[*.{java,perm,xml,json}]
+[*.{java,perm,xml,json,txt}]
 indent_style = tab
 indent_size = 4
 insert_final_newline = true

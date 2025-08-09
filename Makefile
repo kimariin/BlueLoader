@@ -1,7 +1,7 @@
 # Makefile cheat sheet:
 # https://www.gnu.org/software/make/manual/html_node/Automatic-Variables.html
 
-all: build/blueloader.iso build/payload.jar
+all: build/blueloader.iso build/fsdump.jar build/lapse.jar
 
 # Known-good JDK packages for Linux
 # Source: https://github.com/adoptium/temurin8-binaries/releases
@@ -67,35 +67,42 @@ build/blueloader.jar: $(JAVA8) $(addprefix src/,$(LOADER_SOURCES)) src/$(LOADER_
 	-rm META-INF/SIG-BD00.SF
 	-rmdir META-INF
 
-# Payload JAR that can be uploaded via 'make upload [ip]:[port]'
+# Payload to dump out any accessible parts of the PS4 filesystem to the network
 
-PAYLOAD_DSTDIR  := build/payload
-PAYLOAD_CPATH   := $(CPATH):build/blueloader.jar
-# Payload entry point:
-PAYLOAD_SOURCES += org/bdj/payload/Payload.java
-# Library & syscall wrappers:
-PAYLOAD_SOURCES += org/bdj/payload/Library.java
-PAYLOAD_SOURCES += org/bdj/payload/LibC.java
-PAYLOAD_SOURCES += org/bdj/payload/LibKernel.java
-# Lapse exploit implementation:
-PAYLOAD_SOURCES += org/bdj/payload/LapseMainThread.java
-PAYLOAD_SOURCES += org/bdj/payload/LapseRaceThread.java
-# Unsafe helper library by TheFloW:
-PAYLOAD_SOURCES += org/bdj/api/AbstractInt.java
-PAYLOAD_SOURCES += org/bdj/api/API.java
-PAYLOAD_SOURCES += org/bdj/api/Buffer.java
-PAYLOAD_SOURCES += org/bdj/api/Int8.java
-PAYLOAD_SOURCES += org/bdj/api/Int16.java
-PAYLOAD_SOURCES += org/bdj/api/Int32.java
-PAYLOAD_SOURCES += org/bdj/api/Int64.java
-PAYLOAD_SOURCES += org/bdj/api/Text.java
-PAYLOAD_SOURCES += org/bdj/api/UnsafeInterface.java
-PAYLOAD_SOURCES += org/bdj/api/UnsafeSunImpl.java
+FSDUMP_DSTDIR   := build/fsdump
+FSDUMP_CPATH    := $(CPATH):build/blueloader.jar
+FSDUMP_MANIFEST := org/bdj/fsdump/manifest.txt
+FSDUMP_SOURCES  += org/bdj/fsdump/FilesystemDump.java
 
-build/payload.jar: $(JAVA8) $(addprefix src/,$(PAYLOAD_SOURCES))
-	mkdir -p $(PAYLOAD_DSTDIR)
-	$(JDK8)/bin/javac -d $(PAYLOAD_DSTDIR) -sourcepath src $(JFLAGS) -cp $(CPATH) $(addprefix src/,$(PAYLOAD_SOURCES))
-	$(JDK8)/bin/jar cf $@ -C $(PAYLOAD_DSTDIR) .
+build/fsdump.jar: $(JAVA8) build/blueloader.jar $(addprefix src/,$(FSDUMP_SOURCES)) $(addprefix src/,$(FSDUMP_MANIFEST))
+	mkdir -p $(FSDUMP_DSTDIR)
+	$(JDK8)/bin/javac -d $(FSDUMP_DSTDIR) -sourcepath src $(JFLAGS) -cp $(FSDUMP_CPATH) $(addprefix src/,$(FSDUMP_SOURCES))
+	$(JDK8)/bin/jar cmvf $(addprefix src/,$(FSDUMP_MANIFEST)) $@ -C $(FSDUMP_DSTDIR) .
+
+.PHONY: send-fsdump
+send-fsdump: build/fsdump.jar # Usage: HOST=192.168.x.x make send-fsdump
+	cat build/fsdump.jar | netcat $(HOST) 9025 -q0
+
+# Experimental payload for Lapse
+
+LAPSE_DSTDIR   := build/lapse
+LAPSE_CPATH    := $(CPATH):build/blueloader.jar
+LAPSE_MANIFEST := org/bdj/lapse/manifest.txt
+LAPSE_SOURCES  += org/bdj/lapse/Payload.java
+LAPSE_SOURCES  += org/bdj/lapse/Library.java
+LAPSE_SOURCES  += org/bdj/lapse/LibC.java
+LAPSE_SOURCES  += org/bdj/lapse/LibKernel.java
+LAPSE_SOURCES  += org/bdj/lapse/LapseMainThread.java
+LAPSE_SOURCES  += org/bdj/lapse/LapseRaceThread.java
+
+build/lapse.jar: $(JAVA8) build/blueloader.jar $(addprefix src/,$(LAPSE_SOURCES)) $(addprefix src/,$(LAPSE_MANIFEST))
+	mkdir -p $(LAPSE_DSTDIR)
+	$(JDK8)/bin/javac -d $(LAPSE_DSTDIR) -sourcepath src $(JFLAGS) -cp $(LAPSE_CPATH) $(addprefix src/,$(LAPSE_SOURCES))
+	$(JDK8)/bin/jar cmvf $(addprefix src/,$(LAPSE_MANIFEST)) $@ -C $(LAPSE_DSTDIR) .
+
+.PHONY: send-lapse
+send-lapse: build/lapse.jar # Usage: HOST=192.168.x.x make send-lapse
+	cat build/lapse.jar | netcat $(HOST) 9025 -q0
 
 # Assemble the Blu-ray disc
 
@@ -193,13 +200,6 @@ DISC_LABEL := BlueLoader
 
 build/blueloader.iso: $(MAKEFS) $(BD_ALL)
 	$(MAKEFS) -m 16m -t udf -o T=bdre,v=2.50,L=$(DISC_LABEL) $@ $(DISC)
-
-# Command that uploads built payload to loader
-# Usage: HOST=192.168.x.x make upload
-
-.PHONY: upload
-upload: build/payload.jar
-	cat build/payload.jar | netcat $(HOST) 9025 -q0
 
 # Command that listens to the remote console
 # Usage: HOST=192.168.x.x make console

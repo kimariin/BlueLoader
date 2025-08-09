@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2025 Kimari
 
-package org.bdj.payload;
+package org.bdj.lapse;
 
 import org.bdj.UITextConsole;
 import org.bdj.api.API;
+import org.bdj.lapse.Library.Function;
 
 /** Wrapper around libc */
 
