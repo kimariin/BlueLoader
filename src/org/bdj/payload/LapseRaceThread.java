@@ -62,15 +62,24 @@ public class LapseRaceThread extends Thread {
 		// k.cpuSetPriorityForCurrentThread(mt.newPriority);
 
 		// Mark thread as ready & send back thread id
+		// console.add("Racer: signalling, tid = " + k.cpuGetCurrentThreadId());
 		outThreadId.putLong(0, k.cpuGetCurrentThreadId());
 
 		// Block until the main thread sends us something on signalFd
-		signalFd.read(1);
+		// console.add("Racer: reading from signalFd " + signalFd.fd);
+		// signalFd.read(1);
+
+		// Pipes appear to be cursed. Let's see if a spinlock fares any better.
+		while (outThreadId.getLong(0) != 0) {
+			k.yield();
+		}
 
 		// Delete (hopefully double-free!)
+		// console.add("Racer: unblocked, calling aioMultiDelete");
 		k.aioMultiDelete(submitIdsToDelete, errors);
 
 		// Let the main thread know we're done
+		// console.add("Racer: done, signalling main thread");
 		outDone.putLong(0, 1);
 	}
 }

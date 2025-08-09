@@ -700,6 +700,8 @@ public class LibKernel extends Library {
 	/** Max number of requests that can be created/polled/canceled/deleted/waited */
 	public static final int MAX_AIO_IDS = 128;
 
+	public static final int SCE_KERNEL_ERROR_ESRCH = 0x80020003;
+
 	/** The various SceAIO syscalls that copies out errors/states will not check if the address is
 	 * NULL and will return EFAULT. this dummy buffer will serve as the default argument so users
 	 * don't need to specify one */
@@ -1289,7 +1291,7 @@ public class LibKernel extends Library {
 		 * Returns a new socket for the particular connection that was accepted. */
 		public Socket accept() {
 			long r = SYS_accept.call(fd, /* out addr */ 0, /* out addrlen */ 0);
-			if (r != 0) throw new SystemCallFailed("fd=" + fd, errno(), libc);
+			if (r == -1) throw new SystemCallFailed("fd=" + fd, errno(), libc);
 			return new Socket((int)r, true);
 		}
 
