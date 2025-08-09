@@ -6,16 +6,6 @@ package org.bdj.lapse;
 import org.bdj.UITextConsole;
 import org.bdj.api.API;
 import org.bdj.api.Buffer;
-import org.bdj.lapse.Library.BufferLike;
-import org.bdj.lapse.Library.Callable;
-import org.bdj.lapse.Library.FieldInt32;
-import org.bdj.lapse.Library.FieldInt64;
-import org.bdj.lapse.Library.FieldOffT;
-import org.bdj.lapse.Library.FieldPtr;
-import org.bdj.lapse.Library.FieldSizeT;
-import org.bdj.lapse.Library.Function;
-import org.bdj.lapse.Library.SystemCallFailed;
-import org.bdj.lapse.Library.SystemCallInvalid;
 
 /** Wrapper around libkernel and OS syscalls required by Lapse */
 
@@ -32,7 +22,7 @@ public class LibKernel extends Library {
 	}
 
 	// Need this around for strerror
-	private LibC libc = new LibC(console);
+	public LibC libc = new LibC(console);
 
 	/***********************************************************************************************
 	 * sceKernelGetModuleInfoFromAddr
@@ -707,6 +697,11 @@ public class LibKernel extends Library {
 	public static final int AIO_STATE_COMPLETED = 2;
 	public static final int AIO_STATE_ABORTED   = 3;
 
+	/** Wait for all requests */
+	public static final int AIO_WAIT_AND = 1;
+	/** Wait for one request */
+	public static final int AIO_WAIT_OR = 2;
+
 	/** Max number of requests that can be created/polled/canceled/deleted/waited */
 	public static final int MAX_AIO_IDS = 128;
 
@@ -1083,6 +1078,30 @@ public class LibKernel extends Library {
 		}
 	}
 
+	/** Wait for one or more pending AIO requests. Only up to MAX_AIO_IDS(128).
+	 * @param ids submit IDs of requests to poll
+	 * @param errors FIXME: no idea
+	 * @param mode AIO_WAIT_AND (wait for all) or AIO_WAIT_OR (wait for one)
+	 */
+	public void aioMultiWait(AioSubmitIdArray ids, AioErrorArray errors, int mode) {
+		if (errors == null) {
+			errors = AIO_ERRORS;
+		}
+		int nids = ids.count, nerrs = errors.count;
+		if (nids > nerrs) {
+			throw new SystemCallInvalid(nids + " ids > " + nerrs + " errors");
+		}
+		if (nids > MAX_AIO_IDS) {
+			throw new SystemCallInvalid(nids + " ids > " + MAX_AIO_IDS + " MAX_AIO_IDS");
+		}
+		// Last argument is listed as *usec in Lapse PoC, elapsed time I guess?
+		long r = SYS_aio_multi_wait.call(ids.address(), nids, errors.address(), mode, 0);
+		if (r != 0) {
+			throw new SystemCallFailed("ids=" + ids + " errors=" + errors + " mode=" + mode +
+				" => " + r, errno(), libc);
+		}
+	}
+
 	/** Delete one or more pending AIO requests. Only up to MAX_AIO_IDS(128).
 	 * @param ids submit IDs of requests to delete
 	 * @param errors FIXME: no idea
@@ -1096,7 +1115,7 @@ public class LibKernel extends Library {
 			throw new SystemCallInvalid(nids + " ids > " + nerrs + " errors");
 		}
 		if (nids > MAX_AIO_IDS) {
-			// Use aioMultiPollAutoBatch instead
+			// Use aioMultiDeleteAutoBatch instead
 			throw new SystemCallInvalid(nids + " ids > " + MAX_AIO_IDS + " MAX_AIO_IDS");
 		}
 		long r = SYS_aio_multi_delete.call(ids.address(), nids, errors.address());
@@ -1459,5 +1478,26 @@ public class LibKernel extends Library {
 
 	public void yield() {
 		SYS_sched_yield.call();
+	}
+
+	/***********************************************************************************************
+	 * pthreads
+	 **********************************************************************************************/
+
+	public Function PthreadBarrierInit = new Function("pthread_barrier_init");
+	public Function PthreadBarrierWait = new Function("pthread_barrier_wait");
+
+	public class PthreadBarrier {
+		private Buffer handle;
+
+		public PthreadBarrier() {
+			handle = new Buffer(8);
+			handle.fill((byte)0);
+			PthreadBarrierInit.call(handle.address());
+		}
+
+		public void barrierWait() {
+			PthreadBarrierWait.call(handle.address());
+		}
 	}
 }

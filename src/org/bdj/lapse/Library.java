@@ -81,7 +81,7 @@ public class Library {
 
 	/** Native callable function/syscall failed with an error */
 	public static class SystemCallFailed extends RuntimeException {
-		public int errno = 0;       // number returned by libc errno (or 0)
+		public int errno = 0;       // number returned by libkernel __error (or 0)
 		public String error = null; // string returned by libc strerror (or null)
 		public SystemCallFailed(String msg) {
 			super(msg);

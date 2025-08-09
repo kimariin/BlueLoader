@@ -92,8 +92,7 @@ LAPSE_SOURCES  += org/bdj/lapse/Payload.java
 LAPSE_SOURCES  += org/bdj/lapse/Library.java
 LAPSE_SOURCES  += org/bdj/lapse/LibC.java
 LAPSE_SOURCES  += org/bdj/lapse/LibKernel.java
-LAPSE_SOURCES  += org/bdj/lapse/LapseMainThread.java
-LAPSE_SOURCES  += org/bdj/lapse/LapseRaceThread.java
+LAPSE_SOURCES  += org/bdj/lapse/Lapse.java
 
 build/lapse.jar: $(JAVA8) build/blueloader.jar $(addprefix src/,$(LAPSE_SOURCES)) $(addprefix src/,$(LAPSE_MANIFEST))
 	mkdir -p $(LAPSE_DSTDIR)
