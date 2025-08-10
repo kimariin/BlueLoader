@@ -208,7 +208,7 @@ public class Lapse extends Thread {
 			Console.log("Lapse: aliased socket pair attempt " + iTry);
 			for (int iSocket = 0; iSocket < NUM_SOCKETS; iSocket++) {
 				Socket socket = sockets[iSocket];
-				aliasRthdrBuf.putInt(markerOffset, iSocket + 1);
+				aliasRthdrBuf.putInt(markerOffset, iSocket);
 				// Does setsockopt actually need to be called with rthdrLen?
 				Console.log("-> socket " + socket.fd + " setsockopt IPV6_RTHDR");
 				socket.setOption(LibKernel.IPPROTO_IPV6, LibKernel.IPV6_RTHDR, aliasRthdrBufAdjLen);
