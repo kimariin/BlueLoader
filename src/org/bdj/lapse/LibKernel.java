@@ -1356,7 +1356,7 @@ public class LibKernel extends Library {
 		/** Get an arbitrary socket option, writing to a given buffer.
 		 * @param level SOL_SOCKET for general options, IPPROTO_* for protocol specific options
 		 * @param optname SO_* for SOL_SOCKET or IP_*, TCP_*, IPV6_*, etc. for IPPROTO_*
-		 * @param optsize option data buffer size, depends on option, can't be auto-detected
+		 * @param optval option data buffer, depends on option
 		*/
 		public void getOption(int level, int optname, Buffer optval) {
 			Buffer size = new Buffer(4);
@@ -1552,6 +1552,39 @@ public class LibKernel extends Library {
 
 		public void barrierWait() {
 			PthreadBarrierWait.call(handle.address());
+		}
+	}
+
+	/***********************************************************************************************
+	 * evf
+	 **********************************************************************************************/
+
+	public class Evf {
+		public int id;
+
+		public Evf(int attributes, long flags) {
+			Buffer name = new Buffer(1);
+			name.putByte(0, (byte)1);
+			long r = SYS_evf_create.call(name.address(), attributes, flags);
+			if (r == -1) {
+				throw new SystemCallFailed("", errno(), libc);
+			}
+			id = (int)r;
+		}
+
+		public void set(long flags) {
+			long r = SYS_evf_set.call(id, flags);
+			if (r == -1) throw new SystemCallFailed("", errno(), libc);
+		}
+
+		public void clear() {
+			long r = SYS_evf_clear.call(id);
+			if (r == -1) throw new SystemCallFailed("", errno(), libc);
+		}
+
+		public void delete() {
+			long r = SYS_evf_delete.call(id);
+			if (r == -1) throw new SystemCallFailed("", errno(), libc);
 		}
 	}
 }
