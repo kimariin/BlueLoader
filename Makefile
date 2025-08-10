@@ -112,25 +112,13 @@ BD_FONT   := $(DISC)/BDMV/AUXDATA/00000.otf
 BD_FNTIDX := $(DISC)/BDMV/AUXDATA/dvb.fontindex
 BD_META   := $(DISC)/BDMV/META/DL/bdmt_eng.xml
 BD_BANNER := $(DISC)/BDMV/META/DL/banner.jpg
-BD_INDEX1 := $(DISC)/BDMV/index.bdmv
-BD_INDEX2 := $(DISC)/BDMV/BACKUP/index.bdmv
-BD_INDEX3 := $(DISC)/BDMV/BACKUP/INDEX.BDM
-BD_MVOBJ1 := $(DISC)/BDMV/MovieObject.bdmv
-BD_MVOBJ2 := $(DISC)/BDMV/BACKUP/MovieObject.bdmv
-BD_MVOBJ3 := $(DISC)/BDMV/BACKUP/MOVIEOBJ.BDM
-BD_CLPI   := $(DISC)/BDMV/CLIPINF/00000.clpi
-BD_MPLS   := $(DISC)/BDMV/PLAYLIST/00000.mpls
-BD_STREAM := $(DISC)/BDMV/STREAM/00000.m2ts
-BD_ID1    := $(DISC)/CERTIFICATE/id.bdmv
-BD_ID2    := $(DISC)/CERTIFICATE/BACKUP/id.bdmv
-BD_ACRT1  := $(DISC)/CERTIFICATE/app.discroot.crt
-BD_ACRT2  := $(DISC)/CERTIFICATE/BACKUP/app.discroot.crt
-BD_BCRT1  := $(DISC)/CERTIFICATE/bu.discroot.crt
-BD_BCRT2  := $(DISC)/CERTIFICATE/BACKUP/bu.discroot.crt
+BD_INDEX  := $(DISC)/BDMV/index.bdmv
+BD_MVOBJ  := $(DISC)/BDMV/MovieObject.bdmv
+BD_ID     := $(DISC)/CERTIFICATE/id.bdmv
+BD_ACRT   := $(DISC)/CERTIFICATE/app.discroot.crt
+BD_BCRT   := $(DISC)/CERTIFICATE/bu.discroot.crt
 BD_ALL    := $(BD_JO) $(BD_JAR) $(BD_FONT) $(BD_FNTIDX) $(BD_META) $(BD_BANNER) \
-             $(BD_INDEX1) $(BD_INDEX2) $(BD_INDEX3) $(BD_MVOBJ1) $(BD_MVOBJ2) $(BD_MVOBJ3) \
-             $(BD_CLPI) $(BD_MPLS) $(BD_STREAM) \
-             $(BD_ID1) $(BD_ID2) $(BD_ACRT1) $(BD_ACRT2) $(BD_BCRT1) $(BD_BCRT2)
+             $(BD_INDEX) $(BD_MVOBJ) $(BD_ID) $(BD_ACRT) $(BD_BCRT)
 
 # Create directories
 $(DISC): $(sort $(dir $(BD_ALL)))
@@ -138,7 +126,7 @@ $(sort $(dir $(BD_ALL))):
 	mkdir -p $(dir $(BD_ALL))
 
 # bdjo.xml/00000.bdjo tells the Blu-ray player which Xlet subclass to load
-$(BD_JO): bd-metadata/bdjo.xml $(DISC) $(JAVA8) thirdparty/bd-tools/bdjo.jar
+$(BD_JO): bd-metadata/bdjo.xml $(DISC) $(JAVA8)
 	$(JAVA8) -jar thirdparty/bd-tools/bdjo.jar $< $@
 
 # Signed JAR containing the BlueLoader Xlet
@@ -157,40 +145,22 @@ $(BD_META): bd-metadata/bdmt_eng.xml $(DISC)
 $(BD_BANNER): bd-metadata/banner.jpg $(DISC)
 	cp $< $@
 
-# Boilerplate that we just have to copy from BDJ-SDK
-# This is mostly bloat and ideally we'd generate a simpler set using the Disc Creation Tools, but
-# figuring out which bits the PS4 actually cares about is just too painful for me at this point.
-$(BD_INDEX1): thirdparty/bd-template/index.bdmv $(DISC)
-	cp $< $@
-$(BD_INDEX2): thirdparty/bd-template/index.bdmv $(DISC)
-	cp $< $@
-$(BD_INDEX3): thirdparty/bd-template/index.bdmv $(DISC)
-	cp $< $@
-$(BD_MVOBJ1): thirdparty/bd-template/MovieObject.bdmv $(DISC)
-	cp $< $@
-$(BD_MVOBJ2): thirdparty/bd-template/MovieObject.bdmv $(DISC)
-	cp $< $@
-$(BD_MVOBJ3): thirdparty/bd-template/MovieObject.bdmv $(DISC)
-	cp $< $@
-$(BD_CLPI): thirdparty/bd-template/CLIPINF/00000.clpi $(DISC)
-	cp $< $@
-$(BD_MPLS): thirdparty/bd-template/PLAYLIST/00000.mpls $(DISC)
-	cp $< $@
-$(BD_STREAM): thirdparty/bd-template/STREAM/00000.m2ts $(DISC)
-	cp $< $@
+# Blu-ray index that points the player towards MovieObject
+$(BD_INDEX): bd-metadata/index.xml $(DISC) $(JAVA8)
+	$(JAVA8) -jar thirdparty/bd-tools/index.jar $< $@
 
-# Certificates are also taken from BDJ-SDK
-$(BD_ID1): thirdparty/bd-certificates/id.bdmv $(DISC)
+# Blu-ray movie object that somehow tells the player to run the BD-J xlet? Extremely cursed
+$(BD_MVOBJ): bd-metadata/movieobject.xml $(DISC) $(JAVA8)
+	$(JAVA8) -jar thirdparty/bd-tools/movieobject.jar $< $@
+
+# Just an orgId really, needs to match bdjo and perm
+$(BD_ID): bd-metadata/id.xml $(DISC) $(JAVA8)
+	$(JAVA8) -jar thirdparty/bd-tools/id.jar $< $@
+
+# Certificates are taken from BDJ-SDK, need to match the keystore
+$(BD_ACRT): thirdparty/bd-certificates/app.discroot.crt $(DISC)
 	cp $< $@
-$(BD_ID2): thirdparty/bd-certificates/id.bdmv $(DISC)
-	cp $< $@
-$(BD_ACRT1): thirdparty/bd-certificates/app.discroot.crt $(DISC)
-	cp $< $@
-$(BD_ACRT2): thirdparty/bd-certificates/app.discroot.crt $(DISC)
-	cp $< $@
-$(BD_BCRT1): thirdparty/bd-certificates/bu.discroot.crt $(DISC)
-	cp $< $@
-$(BD_BCRT2): thirdparty/bd-certificates/bu.discroot.crt $(DISC)
+$(BD_BCRT): thirdparty/bd-certificates/bu.discroot.crt $(DISC)
 	cp $< $@
 
 # Generate the final ISO containing BlueLoader
@@ -206,3 +176,9 @@ build/blueloader.iso: $(MAKEFS) $(BD_ALL)
 .PHONY: console
 console:
 	netcat $(HOST) 9020
+
+# Cleaning just means deleting the build directory
+
+.PHONY: clean
+clean:
+	rm -r build
