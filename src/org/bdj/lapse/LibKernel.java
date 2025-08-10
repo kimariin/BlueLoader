@@ -962,7 +962,8 @@ public class LibKernel extends Library {
 		}
 		long r = SYS_aio_submit_cmd.call(cmd, requests.address(), nreqs, AIO_PRIORITY_HIGH, ids.address());
 		if (r != 0) {
-			throw new SystemCallFailed("cmd=0x" + Long.toHexString(cmd) + ", " + "reqs=" + requests + ", " +
+			throw new SystemCallFailed("cmd=0x" + Long.toHexString(cmd) + ", " +
+				// "reqs=" + requests + ", " + // takes too much space
 				"prio=3, " + "ids=0x" + ids + " => " + r, errno(), libc);
 		}
 	}
@@ -1150,18 +1151,25 @@ public class LibKernel extends Library {
 	/***********************************************************************************************
 	 * Socket APIs
 	 * http://fxr.watson.org/fxr/source/sys/socket.h?v=FREEBSD-9-1
+	 * http://fxr.watson.org/fxr/source/netinet/tcp.h?v=FREEBSD-9-1
 	 * http://fxr.watson.org/fxr/source/netinet/tcp_fsm.h?v=FREEBSD-9-1
+	 * http://fxr.watson.org/fxr/source/netinet6/in6.h?v=FREEBSD-9-1
 	 **********************************************************************************************/
 
+	// sys/socket.h - Address families
 	public static final byte AF_UNIX  = 1;  // local to host (pipes, portals)
 	public static final byte AF_INET  = 2;  // internetwork: UDP, TCP, etc.
 	public static final byte AF_INET6 = 28; // IPv6
 
+	// sys/socket.h - Types
 	public static final byte SOCK_STREAM = 1; // stream socket
 	public static final byte SOCK_DGRAM  = 2; // datagram socket
 	public static final byte SOCK_RAW    = 3; // raw-protocol socket
 
-	public static final int SOL_SOCKET      = 0xffff; // options for socket level
+	// sys/socket.h - Level number for (get/set)sockopt() to apply to socket itself
+	public static final int SOL_SOCKET = 0xffff; // options for socket level
+
+	// sys/socket.h - Option flags per-socket
 	public static final int SO_DEBUG        = 0x0001; // turn on debugging info recording
 	public static final int SO_ACCEPTCONN   = 0x0002; // socket has had listen()
 	public static final int SO_REUSEADDR    = 0x0004; // allow local address reuse
@@ -1179,11 +1187,16 @@ public class LibKernel extends Library {
 	public static final int SO_NO_OFFLOAD   = 0x4000; // socket cannot be offloaded
 	public static final int SO_NO_DDP       = 0x8000; // disable direct data placement
 
+	// in.h - Protocols common to RFC 1700, POSIX, and X/Open
 	public static final int IPPROTO_IP   = 0;  // dummy for IP
 	public static final int IPPROTO_ICMP = 1;  // control message protocol
 	public static final int IPPROTO_TCP  = 6;  // tcp
 	public static final int IPPROTO_UDP  = 17; // user datagram protocol
 
+	// in.h - Protocols (RFC 1700)
+	public static final int IPPROTO_IPV6 = 41; // IP6 header
+
+	// netinet/tcp.h - User-settable options (used with setsockopt)
 	public static final int TCP_NODELAY    = 0x01;  // don't delay send to coalesce packets
 	public static final int TCP_MAXSEG     = 0x02;  // set maximum segment size
 	public static final int TCP_NOPUSH     = 0x04;  // don't push last block of write
@@ -1196,6 +1209,7 @@ public class LibKernel extends Library {
 	public static final int TCP_KEEPINTVL  = 0x200; // L,N interval between keepalives
 	public static final int TCP_KEEPCNT    = 0x400; // L,N number of keepalives before close
 
+	// netinet/tcp_fsm.h - TCP FSM state definitions
 	public static final int TCPS_CLOSED       = 0;  // closed
 	public static final int TCPS_LISTEN       = 1;  // listening for connection
 	public static final int TCPS_SYN_SENT     = 2;  // active, have sent syn
@@ -1210,6 +1224,13 @@ public class LibKernel extends Library {
 	// states > TCPS_CLOSE_WAIT && < TCPS_FIN_WAIT_2 await ACK of FIN
 	public static final int TCPS_FIN_WAIT_2   = 9;  // have closed, fin is acked
 	public static final int TCPS_TIME_WAIT    = 10; // in 2*msl quiet wait after close
+
+	// netinet6/in6.h - Options for use with [gs]etsockopt at the IPV6 level.
+	public static final int IPV6_2292PKTOPTIONS = 25; // buf/cmsghdr; set/get IPv6 options
+	public static final int IPV6_PKTINFO        = 46; // in6_pktinfo; send if, src addr
+	public static final int IPV6_NEXTHOP        = 48; // sockaddr; next hop addr
+	public static final int IPV6_RTHDR          = 51; // ip6_rthdr; send routing header
+	public static final int IPV6_TCLASS         = 61; // int; send traffic class value
 
 	public static short shortToNetworkByteOrder(int x) {
 		return (short)(((x & 0xff) << 8) | ((x & 0xff00) >> 8));
@@ -1293,10 +1314,11 @@ public class LibKernel extends Library {
 		/** Creates an endpoint for communication.
 		 * @param domain AF_UNIX, AF_INET, AF_INET6
 		 * @param type SOCK_STREAM, SOCK_DGRAM, SOCK_RAW
+		 * @param protocol IPPROTO_TCP, IPPROTO_UDP (optional)
 		 */
-		public Socket(int domain, int type) {
+		public Socket(int domain, int type, int protocol) {
 			super(0, false);
-			long r = SYS_socket.call(domain, type, /* protocol */ 0);
+			long r = SYS_socket.call(domain, type, protocol);
 			if (r == -1) throw new SystemCallFailed("domain=" + domain + ", type=" + type, errno(), libc);
 			this.fd = (int)r;
 			this.owner = true;
@@ -1331,31 +1353,63 @@ public class LibKernel extends Library {
 			if (r != 0) throw new SystemCallFailed("fd=" + fd + " name=" + name.toString(), errno(), libc);
 		}
 
-		/** Get the TCP FSM state for this socket.
-		 * @return TCPS_CLOSED, TCPS_LISTEN, etc. */
-		public int getTCPState() {
-			Buffer info = new Buffer(256);
+		/** Get an arbitrary socket option, writing to a given buffer.
+		 * @param level SOL_SOCKET for general options, IPPROTO_* for protocol specific options
+		 * @param optname SO_* for SOL_SOCKET or IP_*, TCP_*, IPV6_*, etc. for IPPROTO_*
+		 * @param optsize option data buffer size, depends on option, can't be auto-detected
+		*/
+		public void getOption(int level, int optname, Buffer optval) {
 			Buffer size = new Buffer(4);
-			size.putInt(0, info.size());
-			SYS_getsockopt.call(fd, IPPROTO_TCP, TCP_INFO, info.address(), size.address());
-			return info.getByte(0);
+			size.putInt(0, optval.size());
+			// NOTE: The lapse code does some weird stuff around make_aliased_rthdrs that makes me
+			// not want to screw with this buffer beyond what getsockopt does to it
+			// optval.fill((byte)0); // don't uncomment just yet
+			long r = SYS_getsockopt.call(fd, level, optname, optval.address(), size.address());
+			if (r != 0) {
+				throw new SystemCallFailed(
+					"level=" + level + " name=" + optname + " size=" + optval.size(),
+					errno(), libc);
+			}
+		}
+
+		/** Get an arbitrary socket option, writing to a newly allocated buffer.
+		 * @param level SOL_SOCKET for general options, IPPROTO_* for protocol specific options
+		 * @param optname SO_* for SOL_SOCKET or IP_*, TCP_*, IPV6_*, etc. for IPPROTO_*
+		 * @param optsize option data buffer size, depends on option, can't be auto-detected
+		*/
+		public Buffer getOption(int level, int optname, int optsize) {
+			Buffer optval = new Buffer(optsize);
+			getOption(level, optname, optval);
+			return optval;
+		}
+
+		/** Set an arbitrary socket option.
+		 * @param level SOL_SOCKET for general options, IPPROTO_* for protocol specific options
+		 * @param optname SO_* for SOL_SOCKET or IP_*, TCP_*, IPV6_*, etc. for IPPROTO_*
+		 * @param optval buffer to read option data from, format is option-specific
+		*/
+		public void setOption(int level, int optname, Buffer optval) {
+			long r = SYS_setsockopt.call(fd, level, optname, optval.address(), optval.size());
+			if (r != 0) {
+				throw new SystemCallFailed(
+					"level=" + level + " name=" + optname + " size=" + optval.size(),
+					errno(), libc);
+			}
 		}
 
 		/** Set the SO_REUSEADDR socket option. */
 		public void setReuseAddr(boolean enable) {
-			Buffer buf = new Buffer(4);
-			buf.putInt(0, enable ? 1 : 0);
-			long r = SYS_setsockopt.call(fd, SOL_SOCKET, SO_REUSEADDR, buf.address(), buf.size());
-			if (r != 0) throw new SystemCallFailed("fd=" + fd + " enable=" + enable, errno(), libc);
+			Buffer optval = new Buffer(4);
+			optval.putInt(0, enable ? 1 : 0);
+			setOption(SOL_SOCKET, SO_REUSEADDR, optval);
 		}
 
 		/** Set the SO_LINGER socket option. */
 		public void setLinger(boolean onoff, int linger) {
-			Buffer buf = new Buffer(8);
-			buf.putInt(0, onoff ? 1 : 0);
-			buf.putInt(4, linger);
-			long r = SYS_setsockopt.call(fd, SOL_SOCKET, SO_LINGER, buf.address(), buf.size());
-			if (r != 0) throw new SystemCallFailed("fd=" + fd + " onoff=" + onoff + " linger=" + linger, errno(), libc);
+			Buffer optval = new Buffer(8);
+			optval.putInt(0, onoff ? 1 : 0);
+			optval.putInt(4, linger);
+			setOption(SOL_SOCKET, SO_REUSEADDR, optval);
 		}
 	}
 
