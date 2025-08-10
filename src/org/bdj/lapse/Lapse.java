@@ -84,7 +84,7 @@ public class Lapse extends Thread {
 		AioSubmitIdArray deleteIds = ids.slice(WHICH_REQUEST, 1);
 		AioErrorArray mainErr = k.new AioErrorArray(1);
 		AioErrorArray raceErr = k.new AioErrorArray(1);
-		PthreadBarrier barrier = k.new PthreadBarrier();
+		PthreadBarrier barrier = k.new PthreadBarrier(2);
 
 		try {
 			for (int i = 0; i < sockets.length; i++) {

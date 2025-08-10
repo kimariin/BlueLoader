@@ -1544,10 +1544,10 @@ public class LibKernel extends Library {
 	public class PthreadBarrier {
 		private Buffer handle;
 
-		public PthreadBarrier() {
+		public PthreadBarrier(int count) {
 			handle = new Buffer(8);
 			handle.fill((byte)0);
-			PthreadBarrierInit.call(handle.address());
+			PthreadBarrierInit.call(handle.address(), 0, count);
 		}
 
 		public void barrierWait() {
