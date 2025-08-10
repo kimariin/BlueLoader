@@ -3,16 +3,16 @@
 
 package org.bdj.lapse;
 
-import org.bdj.UITextConsole;
+import org.bdj.Console;
 import org.bdj.api.API;
 
 /** Wrapper around libc */
 
 public class LibC extends Library {
-	public LibC(UITextConsole console) throws Exception {
-		super(console, API.LIBC_MODULE_HANDLE);
-		console.add("Loaded LibC: handle " + handle);
-		console.add("Loaded LibC: strerror = 0x" + Long.toHexString(this.Strerror.address));
+	public LibC() throws Exception {
+		super(API.LIBC_MODULE_HANDLE);
+		Console.log("Loaded LibC: handle " + handle);
+		Console.log("Loaded LibC: strerror = 0x" + Long.toHexString(this.Strerror.address));
 	}
 
 	public Function Strerror = new Function("strerror");

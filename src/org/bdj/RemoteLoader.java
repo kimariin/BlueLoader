@@ -18,35 +18,32 @@ import java.util.jar.JarFile;
 import java.util.jar.Manifest;
 
 public class RemoteLoader extends Thread {
-	public int mPort;
+	private InetAddress localhost;
+	private int port;
 
-	private InetAddress mLocalHost;
-	private UITextConsole mConsole;
-
-	public RemoteLoader(InetAddress localHost, int port, UITextConsole console) {
+	public RemoteLoader(InetAddress localHost, int port) {
 		super();
-		mLocalHost = localHost;
-		mPort = port;
-		mConsole = console;
+		this.localhost = localHost;
+		this.port = port;
 	}
 
-	private ServerSocket mServer;
+	private ServerSocket server;
 
 	public void run() {
 		try {
-			mServer = new ServerSocket(mPort);
-			String name = mLocalHost.getHostName();
-			String addr = mLocalHost.getHostAddress();
-			mConsole.add("Remote JAR loader listening on " + name + ":" + mPort);
+			server = new ServerSocket(port);
+			String name = localhost.getHostName();
+			String addr = localhost.getHostAddress();
+			Console.log("Remote JAR loader listening on " + name + ":" + port);
 			if (!name.equals(addr)) {
-				mConsole.add("Remote JAR loader listening on " + addr + ":" + mPort);
+				Console.log("Remote JAR loader listening on " + addr + ":" + port);
 			}
 
 			while (true) {
-				Socket client = mServer.accept();
+				Socket client = server.accept();
 				String clientAddr = client.getInetAddress().getHostAddress();
 				int clientPort = client.getPort();
-				mConsole.add("Remote loader client connected: " + clientAddr + ":" + clientPort);
+				Console.log("Remote loader client connected: " + clientAddr + ":" + clientPort);
 
 				File payload = File.createTempFile("payload", ".jar");
 				payload.deleteOnExit();
@@ -60,7 +57,7 @@ public class RemoteLoader extends Thread {
 					while ((read = input.read(buffer)) != -1) {
 						output.write(buffer, 0, read);
 						total += read;
-						mConsole.add("Transfer: received " + total + " bytes");
+						Console.log("Transfer: received " + total + " bytes");
 					}
 					output.close();
 
@@ -93,21 +90,21 @@ public class RemoteLoader extends Thread {
 					URLClassLoader cl = new URLClassLoader(new URL[]{url}, bypassRestrictionsLoader);
 					Class payloadClass = cl.loadClass(payloadClassName);
 
-					// Expected signature: void main(UITextConsole)
-					Method main = payloadClass.getMethod("main", new Class[]{UITextConsole.class});
+					// Expected signature: void main()
+					Method main = payloadClass.getMethod("main", new Class[]{});
 
-					mConsole.add("Running: " + payloadClassName + ".main()");
-					main.invoke(null, new Object[]{mConsole});
+					Console.log("Running: " + payloadClassName + ".main()");
+					main.invoke(null, new Object[]{});
 
-					mConsole.add("Finished running JAR payload with no errors");
+					Console.log("Finished running JAR payload with no errors");
 				} catch (Throwable e) {
-					mConsole.add(e);
+					Console.log(e);
 				}
 
 				payload.delete();
 			}
 		} catch (Throwable e) {
-			mConsole.add(e);
+			Console.log(e);
 		}
 	}
 }

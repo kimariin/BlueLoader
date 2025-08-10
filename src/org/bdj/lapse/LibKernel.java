@@ -3,7 +3,7 @@
 
 package org.bdj.lapse;
 
-import org.bdj.UITextConsole;
+import org.bdj.Console;
 import org.bdj.api.API;
 import org.bdj.api.Buffer;
 
@@ -13,16 +13,16 @@ public class LibKernel extends Library {
 	// NOTE: This class relies on a specific initialization order to work. Be careful when
 	// reordering things around. There are no compiler warnings for screwing it up.
 
-	public LibKernel(UITextConsole console) throws Exception {
-		super(console, API.LIBKERNEL_MODULE_HANDLE);
-		console.add("Loaded LibKernel: handle " + handle + " base 0x" + Long.toHexString(module.address()));
-		console.add("Loaded LibKernel: __error = 0x" + Long.toHexString(Error.address));
-		console.add("Loaded LibKernel: SYS_exit = 0x" + Long.toHexString(SYS_exit.address));
-		console.add("Loaded LibKernel: SYS_aio_create = 0x" + Long.toHexString(SYS_aio_create.address));
+	public LibKernel() throws Exception {
+		super(API.LIBKERNEL_MODULE_HANDLE);
+		Console.log("Loaded LibKernel: handle " + handle + " base 0x" + Long.toHexString(module.address()));
+		Console.log("Loaded LibKernel: __error = 0x" + Long.toHexString(Error.address));
+		Console.log("Loaded LibKernel: SYS_exit = 0x" + Long.toHexString(SYS_exit.address));
+		Console.log("Loaded LibKernel: SYS_aio_create = 0x" + Long.toHexString(SYS_aio_create.address));
 	}
 
 	// Need this around for strerror
-	public LibC libc = new LibC(console);
+	public LibC libc = new LibC();
 
 	/***********************************************************************************************
 	 * sceKernelGetModuleInfoFromAddr

@@ -3,19 +3,16 @@
 
 package org.bdj.lapse;
 
-import org.bdj.UITextConsole;
 import org.bdj.api.API;
 
 /** Common helper classes for libc and libkernel wrappers */
 
 public class Library {
 	public final API api;
-	public final UITextConsole console;
 	public final int handle;
 
-	public Library(UITextConsole console, int handle) throws Exception {
+	public Library(int handle) throws Exception {
 		this.api = API.getInstance();
-		this.console = console;
 		this.handle = handle;
 	}
 
