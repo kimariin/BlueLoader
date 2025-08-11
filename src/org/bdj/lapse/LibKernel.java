@@ -777,7 +777,8 @@ public class LibKernel extends Library {
 			return new AioResult(result.get());
 		}
 		public String toString() {
-			return "{" + offset.get() + "," + nbyte.get() + "," + buf.get() + "," + result.get() + "," + fd.get() + "}";
+			return "{" + offset.get() + "," + nbyte.get() + "," + buf.get() + "," + result.get() +
+				"," + fd.get() + "}";
 		}
 	}
 
@@ -817,6 +818,13 @@ public class LibKernel extends Library {
 				}
 			}
 			return s + "}";
+		}
+		/** Initialize an aio request array with the bare minimum for aio_submit_cmd to accept it.
+		 * Equivalent to make_reqs1 in lapse.mjs/lua */
+		public void initMinimal() {
+			for (int i = 0; i < count; i++) {
+				set(i, 0, 0, null, null, -1);
+			}
 		}
 	}
 
@@ -991,7 +999,7 @@ public class LibKernel extends Library {
 
 	/** Cancel one or more pending AIO requests. Only up to MAX_AIO_IDS(128).
 	 * @param ids submit IDs of requests to cancel
-	 * @param errors FIXME: no idea
+	 * @param errors status codes returned from aio_multi_cancel
 	 */
 	public void aioMultiCancel(AioSubmitIdArray ids, AioErrorArray errors) {
 		if (errors == null) {
@@ -1002,7 +1010,7 @@ public class LibKernel extends Library {
 			throw new SystemCallInvalid(nids + " ids > " + nerrs + " errors");
 		}
 		if (nids > MAX_AIO_IDS) {
-			// Use aioMultiCancelAutoBatch instead
+			// Use aioUtilBatchCancel instead
 			throw new SystemCallInvalid(nids + " ids > " + MAX_AIO_IDS + " MAX_AIO_IDS");
 		}
 		long r = SYS_aio_multi_cancel.call(ids.address(), nids, errors.address());
@@ -1013,9 +1021,9 @@ public class LibKernel extends Library {
 
 	/** Cancel one or more pending AIO requests. Will use multiple calls for large arrays.
 	 * @param ids submit IDs of requests to cancel
-	 * @param errors FIXME: no idea
+	 * @param errors status codes returned from aio_multi_cancel
 	 */
-	public void aioMultiCancelAutoBatch(AioSubmitIdArray ids, AioErrorArray errors) {
+	public void aioUtilBatchCancel(AioSubmitIdArray ids, AioErrorArray errors) {
 		int nids = ids.count;
 		if (errors != null) {
 			int nerrs = errors.count;
@@ -1036,7 +1044,7 @@ public class LibKernel extends Library {
 
 	/** Poll one or more pending AIO requests. Only up to MAX_AIO_IDS(128).
 	 * @param ids submit IDs of requests to poll
-	 * @param errors FIXME: no idea
+	 * @param errors status codes returned from aio_multi_poll
 	 */
 	public void aioMultiPoll(AioSubmitIdArray ids, AioErrorArray errors) {
 		if (errors == null) {
@@ -1047,7 +1055,7 @@ public class LibKernel extends Library {
 			throw new SystemCallInvalid(nids + " ids > " + nerrs + " errors");
 		}
 		if (nids > MAX_AIO_IDS) {
-			// Use aioMultiPollAutoBatch instead
+			// Use aioUtilBatchPoll instead
 			throw new SystemCallInvalid(nids + " ids > " + MAX_AIO_IDS + " MAX_AIO_IDS");
 		}
 		long r = SYS_aio_multi_poll.call(ids.address(), nids, errors.address());
@@ -1058,9 +1066,9 @@ public class LibKernel extends Library {
 
 	/** Poll one or more pending AIO requests. Will use multiple calls for large arrays.
 	 * @param ids submit IDs of requests to poll
-	 * @param errors FIXME: no idea
+	 * @param errors status codes returned from aio_multi_poll
 	 */
-	public void aioMultiPollAutoBatch(AioSubmitIdArray ids, AioErrorArray errors) {
+	public void aioUtilBatchPoll(AioSubmitIdArray ids, AioErrorArray errors) {
 		int nids = ids.count;
 		if (errors != null) {
 			int nerrs = errors.count;
@@ -1081,7 +1089,7 @@ public class LibKernel extends Library {
 
 	/** Wait for one or more pending AIO requests. Only up to MAX_AIO_IDS(128).
 	 * @param ids submit IDs of requests to poll
-	 * @param errors FIXME: no idea
+	 * @param errors status codes returned from aio_multi_wait
 	 * @param mode AIO_WAIT_AND (wait for all) or AIO_WAIT_OR (wait for one)
 	 */
 	public void aioMultiWait(AioSubmitIdArray ids, AioErrorArray errors, int mode) {
@@ -1105,7 +1113,7 @@ public class LibKernel extends Library {
 
 	/** Delete one or more pending AIO requests. Only up to MAX_AIO_IDS(128).
 	 * @param ids submit IDs of requests to delete
-	 * @param errors FIXME: no idea
+	 * @param errors status codes returned from aio_multi_delete
 	 */
 	public void aioMultiDelete(AioSubmitIdArray ids, AioErrorArray errors) {
 		if (errors == null) {
@@ -1116,7 +1124,7 @@ public class LibKernel extends Library {
 			throw new SystemCallInvalid(nids + " ids > " + nerrs + " errors");
 		}
 		if (nids > MAX_AIO_IDS) {
-			// Use aioMultiDeleteAutoBatch instead
+			// Use aioUtilBatchDelete instead
 			throw new SystemCallInvalid(nids + " ids > " + MAX_AIO_IDS + " MAX_AIO_IDS");
 		}
 		long r = SYS_aio_multi_delete.call(ids.address(), nids, errors.address());
@@ -1127,9 +1135,9 @@ public class LibKernel extends Library {
 
 	/** Delete one or more pending AIO requests. Will use multiple calls for large arrays.
 	 * @param ids submit IDs of requests to delete
-	 * @param errors FIXME: no idea
+	 * @param errors status codes returned from aio_multi_delete
 	 */
-	public void aioMultiDeleteAutoBatch(AioSubmitIdArray ids, AioErrorArray errors) {
+	public void aioUtilBatchDelete(AioSubmitIdArray ids, AioErrorArray errors) {
 		int nids = ids.count;
 		if (errors != null) {
 			int nerrs = errors.count;
@@ -1146,6 +1154,22 @@ public class LibKernel extends Library {
 			int start = batches * MAX_AIO_IDS;
 			aioMultiDelete(ids.slice(start, rem), errors != null ? errors.slice(start, rem) : null);
 		}
+	}
+
+	/** Poll and delete one or more pending AIO requests. Like free_aios2 in lapse.mjs.
+	 * @param ids submit IDs of requests to delete
+	 */
+	public void aioUtilBatchPollDelete(AioSubmitIdArray ids) {
+		aioUtilBatchPoll(ids, null);
+		aioUtilBatchDelete(ids, null);
+	}
+
+	/** Cancel, poll and delete one or more pending AIO requests. Like free_aios in lapse.mjs.
+	 * @param ids submit IDs of requests to delete
+	 */
+	public void aioUtilBatchCancelPollDelete(AioSubmitIdArray ids) {
+		aioUtilBatchCancel(ids, null);
+		aioUtilBatchPollDelete(ids);
 	}
 
 	/***********************************************************************************************
@@ -1357,8 +1381,9 @@ public class LibKernel extends Library {
 		 * @param level SOL_SOCKET for general options, IPPROTO_* for protocol specific options
 		 * @param optname SO_* for SOL_SOCKET or IP_*, TCP_*, IPV6_*, etc. for IPPROTO_*
 		 * @param optval option data buffer, depends on option
+		 * @return number of bytes actually written to the buffer
 		*/
-		public void getOption(int level, int optname, Buffer optval) {
+		public int getOption(int level, int optname, Buffer optval) {
 			Buffer size = new Buffer(4);
 			size.putInt(0, optval.size());
 			// NOTE: The lapse code does some weird stuff around make_aliased_rthdrs that makes me
@@ -1370,6 +1395,7 @@ public class LibKernel extends Library {
 					"level=" + level + " name=" + optname + " size=" + optval.size(),
 					errno(), libc);
 			}
+			return size.getInt(0);
 		}
 
 		/** Get an arbitrary socket option, writing to a newly allocated buffer.
@@ -1411,6 +1437,29 @@ public class LibKernel extends Library {
 			optval.putInt(4, linger);
 			setOption(SOL_SOCKET, SO_REUSEADDR, optval);
 		}
+
+		/** Get the IPV6_RTHDR socket option. This writes a struct with a particular size.
+		 * We deliberately don't check the size here because Lapse abuses the size field.
+		 * @return number of bytes actually written to the buffer */
+		public int getRthdr(Buffer dst) {
+			return getOption(IPPROTO_IPV6, IPV6_RTHDR, dst);
+		}
+
+		/** Set the IPV6_RTHDR socket option. This takes a struct with a particular size.
+		 * We deliberately don't check the size here because Lapse abuses the size field. */
+		public void setRthdr(Buffer src) {
+			setOption(IPPROTO_IPV6, IPV6_RTHDR, src);
+		}
+
+		/** Get the TCP FSM state for this socket.
+		 * @return TCPS_CLOSED, TCPS_LISTEN, etc. */
+		public int getTCPState() {
+			Buffer info = new Buffer(256);
+			Buffer size = new Buffer(4);
+			size.putInt(0, info.size());
+			SYS_getsockopt.call(fd, IPPROTO_TCP, TCP_INFO, info.address(), size.address());
+			return info.getByte(0);
+		}
 	}
 
 	/** Creates an unnamed pair of connected sockets.
@@ -1425,6 +1474,12 @@ public class LibKernel extends Library {
 			new Socket(buf.getInt(0), true),
 			new Socket(buf.getInt(4), true),
 		};
+	}
+
+	public class SocketUDP6 extends Socket {
+		public SocketUDP6() {
+			super(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+		}
 	}
 
 	/***********************************************************************************************
@@ -1469,10 +1524,10 @@ public class LibKernel extends Library {
 
 	public static class ThreadPriority {
 		public short type; // PRI_REALTIME, PRI_TIMESHARE
-		public short prio; // 0 to RTP_PRIO_MAX (31?)
-		public ThreadPriority(short type, short prio) {
+		public short prio; // 0 to 31 on BSDs, but apparently 0 is bad and 256 is good on PS4?
+		public ThreadPriority(short type, int prio) {
 			this.type = type;
-			this.prio = prio;
+			this.prio = (short)prio;
 		}
 		public String toString() {
 			return "{" + this.type + "," + this.prio + "}";
@@ -1518,6 +1573,18 @@ public class LibKernel extends Library {
 		nanosleep(seconds, nanoseconds);
 	}
 
+	public boolean waitUntilEqualLong(Buffer buffer, int offset, long reference, int intervalMs, int timeoutMs) {
+		while (timeoutMs > 0) {
+			long value = buffer.getLong(offset);
+			if (value == reference) {
+				return true;
+			}
+			sleep(intervalMs);
+			timeoutMs -= intervalMs;
+		}
+		return false;
+	}
+
 	public boolean waitUntilNotEqualLong(Buffer buffer, int offset, long reference, int intervalMs, int timeoutMs) {
 		while (timeoutMs > 0) {
 			long value = buffer.getLong(offset);
@@ -1560,7 +1627,7 @@ public class LibKernel extends Library {
 	 **********************************************************************************************/
 
 	public class Evf {
-		public int id;
+		public int id = -1;
 
 		public Evf(int attributes, long flags) {
 			Buffer name = new Buffer(1);
@@ -1583,6 +1650,7 @@ public class LibKernel extends Library {
 		}
 
 		public void delete() {
+			if (id == -1) return;
 			long r = SYS_evf_delete.call(id);
 			if (r == -1) throw new SystemCallFailed("", errno(), libc);
 		}
