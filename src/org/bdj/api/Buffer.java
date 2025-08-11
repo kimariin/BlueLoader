@@ -28,6 +28,7 @@ public class Buffer {
 		this.address = api.malloc(size);
 		this.size = size;
 		this.allocated = true;
+		fill((byte)0);
 	}
 
 	public Buffer(long address, int size) {
@@ -108,5 +109,9 @@ public class Buffer {
 		if (offset < 0 || length < 0 || (offset + length) > size) {
 			throw new IndexOutOfBoundsException();
 		}
+	}
+
+	public Buffer slice(int offset, int length) {
+		return new Buffer(address, length);
 	}
 }
