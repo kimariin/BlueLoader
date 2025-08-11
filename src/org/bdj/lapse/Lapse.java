@@ -179,7 +179,20 @@ public class Lapse extends Thread {
 				break;
 			}
 
-			Console.log("-> attempt failed");
+			Console.log("-> attempt failed, deleting leftover ids");
+			AioSubmitIdArray leftIds = k.new AioSubmitIdArray(ids.count - 1);
+			int copyOrigId = 0;
+			for (int copyLeftId = 0; copyLeftId < leftIds.count; copyLeftId++) {
+				if (ids.get(copyOrigId).get() == deleteIds.get(0).get()) continue;
+				leftIds.set(copyLeftId, ids.get(copyOrigId).get());
+				copyOrigId++;
+			}
+			// free_aios
+			try {
+				k.aioMultiCancel(leftIds, null);
+				k.aioMultiPoll(leftIds, null);
+				k.aioMultiDelete(leftIds, null);
+			} catch (Throwable e) {}
 		}
 
 		if (!success) {
