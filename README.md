@@ -27,11 +27,25 @@ cat fsdump.jar | netcat 192.168.x.x 9025 -q0
 netcat 192.168.x.x 9030 > ps4.zip
 ```
 
-To use the lapse payload:
+To use the lapse payload (**which _will_ crash your PS4** in its current state!)
 
 ```sh
-# Note that the PoC might take several thousand attempts. The payload does 1000 per run.
+# Make sure you're connected to the console to see full logs:
+netcat 192.168.x.x 9020
+# Cross your fingers and hope it doesn't instantly crash or frezeze:
 cat lapse.jar | netcat 192.168.x.x 9025 -q0
+# The PS4 OS will likely crash when you do anything else, if it hasn't already.
+# Recommendation: open quick menu (long-press PS) and reboot ASAP.
+```
+
+Last few log lines should look like this, if it's working correctly:
+
+```
+-> 0x881c70d80: 00 00 00 00 00 00 00 00 00 00 00 00 00 ...
+-> 0x881c70da0: 08 0d 00 06 04 01 0f 0f 0f 03 00 00 00 ...
+BreakASLR: kernel image address: 0xffffffff9cef422f
+BreakASLR: kernel heap  address: 0xffffc14406d06600
+DoubleFree: deleting 2 leftover requests
 ```
 
 To build the ISO and payloads locally:
