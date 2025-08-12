@@ -51,6 +51,7 @@ LOADER_BD_PERM := org/bdj/bluray.MainXlet.perm
 LOADER_SOURCES += org/bdj/MainXlet.java
 LOADER_SOURCES += org/bdj/Console.java
 LOADER_SOURCES += org/bdj/TextConsole.java
+LOADER_SOURCES += org/bdj/TextBox.java
 LOADER_SOURCES += org/bdj/RemoteConsole.java
 LOADER_SOURCES += org/bdj/RemoteLoader.java
 LOADER_SOURCES += org/bdj/DisableSecurity.java
@@ -135,7 +136,7 @@ $(BD_JAR): build/blueloader.jar $(DISC)
 	cp $< $@
 
 # There needs to be at least one font file on the disc, if I understand correctly
-$(BD_FONT): bd-metadata/DejaVuSansMono.otf $(DISC)
+$(BD_FONT): bd-metadata/OpenSans-Regular.otf $(DISC)
 	cp $< $@
 $(BD_FNTIDX): bd-metadata/dvb.fontindex $(DISC)
 	cp $< $@
