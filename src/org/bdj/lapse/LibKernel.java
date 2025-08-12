@@ -912,7 +912,7 @@ public class LibKernel extends Library {
 		}
 		public int get() { return this.id.get(); }
 		public void set(int id) { this.id.set(id); }
-		public String toString() { return Integer.toString(id.get()); }
+		public String toString() { return "0x" + Integer.toHexString(id.get()); }
 	}
 
 	/** Array of AIO errors */
