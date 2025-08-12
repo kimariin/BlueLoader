@@ -44,7 +44,7 @@ BDSIGNER := $(JAVA8) -cp $(SECCPATH) net.java.bd.tools.security.BDSigner -keysto
 # MainXlet is the initial Xlet that the PS4 loads. It always lives on the Blu-ray disc.
 
 CPATH  := thirdparty/bd-stubs/interactive.zip:thirdparty/topsecret/rt.jar:thirdparty/topsecret/bdjstack.jar
-JFLAGS := -Xlint:all -Xlint:-options -source 1.4 -target 1.4
+JFLAGS := -Xlint:all -Xlint:-static -Xlint:-serial -Xlint:-options -source 1.4 -target 1.4
 
 LOADER_DSTDIR  := build/blueloader
 LOADER_BD_PERM := org/bdj/bluray.MainXlet.perm
