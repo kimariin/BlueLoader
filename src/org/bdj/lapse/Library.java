@@ -47,6 +47,12 @@ public class Library {
 		public void write64(long  x) { api.write64(buffer.address() + offset, x); }
 	}
 
+	public class FieldByte extends Field {
+		public FieldByte(BufferLike buffer, int offset) { super(buffer, 1, offset); }
+		public byte get()       { return read8(); }
+		public void set(byte x) { write8(x); }
+	}
+
 	public class FieldInt32 extends Field {
 		public FieldInt32(BufferLike buffer, int offset) { super(buffer, 4, offset); }
 		public int  get()      { return read32(); }
@@ -84,12 +90,12 @@ public class Library {
 			super(msg);
 		}
 		public SystemCallFailed(String msg, int errno, String error) {
-			super(msg + " (" + error + ")");
+			super(error + " (" + errno + "): " + msg);
 			this.errno = errno;
 			this.error = error;
 		}
 		public SystemCallFailed(String msg, int errno, LibC libc) {
-			super(msg + " (" + libc.strerror(errno) + ")");
+			super(libc.strerror(errno) + " (" + errno + "): " + msg);
 			this.errno = errno;
 			this.error = libc.strerror(errno);
 		}
