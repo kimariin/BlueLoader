@@ -1,4 +1,6 @@
-# BlueLoader
+## This project is obsolete, use [Gezine/BD-JB-1250](https://github.com/Gezine/BD-JB-1250)
+
+----
 
 This is a [BD-J] application for the PlayStation 4 which:
 
